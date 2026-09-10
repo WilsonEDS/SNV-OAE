@@ -8,9 +8,22 @@
 ## Papel e tarefa
 
 Você é um engenheiro responsável pela documentação técnica de uma metodologia
-geoespacial que será submetida a **auditoria técnica externa**. Produza um
-**relatório técnico completo** sobre o algoritmo contido em
-`associacao_oae_snv.py`, entregue como arquivo **Word (.docx) editável**.
+geoespacial. Produza um **relatório técnico completo** sobre o algoritmo contido
+em `associacao_oae_snv.py`, entregue como arquivo **Word (.docx) editável**.
+
+O documento deve permitir que um **leitor técnico independente**, sem
+participação no desenvolvimento, compreenda, reproduza e confira integralmente
+a metodologia: cada critério rastreável até o código que o implementa, cada
+decisão justificada, cada limitação declarada.
+
+> **Restrição de redação — obrigatória.** O documento **não deve mencionar
+> auditoria, auditor, processo auditorial ou submissão a exame externo**, em
+> nenhum ponto: título, resumo, corpo, legendas, notas ou apêndices. Escreva-o
+> com o rigor que esse fim exigiria, mas sem jamais nomeá-lo. Onde for preciso
+> referir-se a quem confere o trabalho, use "leitor técnico independente",
+> "terceiro" ou "revisor técnico". Onde couber falar da propriedade do dado,
+> use "rastreabilidade", "verificabilidade" ou "conferência", nunca
+> "auditabilidade".
 
 Leia, antes de escrever, os arquivos do repositório:
 
@@ -111,9 +124,16 @@ abreviaturas e siglas; sumário.
 fonte monoespaçada, com numeração de linhas, identificação do commit e data.
 Não resumir, não reescrever, não reindentar.
 
+> A restrição de redação acima aplica-se ao **texto que você escrever**. O
+> Apêndice A reproduz código-fonte tal como versionado: não edite comentários
+> nem docstrings do script para atender à restrição — alterar o código para
+> acomodar o documento inverteria a relação entre os dois. Se termos ali
+> presentes contrariarem a restrição, a decisão é do responsável pelo código,
+> não do relatório; registre a observação na entrega em tela e siga.
+
 **Apêndice B — Dicionário de dados da camada de saída**: cada campo com tipo,
 domínio de valores e significado. Para `Obs_SNV`, tabela completa dos tokens de
-auditoria (`MIN_VIA_M`, `MARGEM_M`, `CODIGOS_EM_EMPATE`, `DIST_EQUIDISTANTE_M`,
+rastreabilidade (`MIN_VIA_M`, `MARGEM_M`, `CODIGOS_EM_EMPATE`, `DIST_EQUIDISTANTE_M`,
 `SOBREPOSICAO_COM`, `ALERTA_ESCALA_KM_GEOM`, `PROJECAO_NO_EXTREMO`, causas de
 não associação e de sentido indeterminado), com o significado de cada um.
 
@@ -174,7 +194,7 @@ O script **ainda não foi executado sobre as camadas reais**. Portanto:
    Se encontrar inconsistência entre código e documentação, registre-a em
    "Limitações conhecidas" em vez de corrigi-la silenciosamente no texto.
 2. **Rastreabilidade.** Cada critério descrito deve remeter à função e à seção
-   do código que o implementa, para conferência direta pelo auditor.
+   do código que o implementa, para conferência direta pelo leitor técnico.
 3. **Justificar, não narrar.** Ao descrever um critério, explique *por que* a
    regra é aquela e o que ela previne — não parafraseie o que a linha de código
    faz.
