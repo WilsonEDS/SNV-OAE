@@ -70,7 +70,6 @@
 #   TOLERANCIA_EMPATE_DISTANCIA_M : tolerancia numerica de equidistancia.
 #   DISTANCIA_MAXIMA_ASSOCIACAO_M : limite duro opcional de associacao (None =
 #                                 desativado; ver secao "PARAMETROS EM AVALIACAO").
-#   EXIGIR_VIA_COMPATIVEL_EM_UNICO_TRECHO : ver secao "PARAMETROS EM AVALIACAO".
 #
 #
 # 5. FLUXO METODOLOGICO E CRITERIOS DE CLASSIFICACAO
@@ -94,12 +93,19 @@
 #
 #     SEM_TRECHO         Geometria da OAE invalida/multiponto, OU nenhum
 #                        vl_codigo valido dentro do raio de busca.
-#     UNICO_TRECHO       Exatamente um vl_codigo distinto dentro do raio.
-#                        Nao ha concorrencia a resolver. Ver nota (i).
-#     TRECHO_DIVERGENTE  Dois ou mais codigos no raio e NENHUM deles compativel
-#                        com a Via declarada (ou Via ausente/nao normalizavel).
-#     TRECHO_EMPATE      Ha codigos compativeis com a Via, mas o conjunto
-#                        vencedor nao se reduz a um unico codigo.
+#     UNICO_TRECHO       Exatamente um vl_codigo distinto dentro do raio, E ele
+#                        e compativel com a Via. Ver notas (i) e (ii).
+#     TRECHO_DIVERGENTE  Nenhum codigo do raio e compativel com a Via declarada
+#                        da OAE, ou a Via esta ausente/nao normalizavel.
+#                        Abrange tanto o caso de codigo unico incompativel
+#                        quanto o de varios codigos, todos incompativeis.
+#     TRECHO_EMPATE      Dois ou mais codigos compativeis com a Via estao a
+#                        MESMA DISTANCIA da OAE (dentro da tolerancia), de modo
+#                        que o conjunto vencedor nao se reduz a um unico
+#                        codigo. Nenhum criterio objetivo os separa e o
+#                        desempate por ordem de leitura e proibido: a OAE
+#                        permanece sem trecho e sem km. Os codigos empatados e
+#                        a distancia comum sao registrados em Obs_SNV.
 #     TRECHO_COINCIDENTE O vencedor unico esta na distancia minima entre TODOS
 #                        os codigos compativeis E compartilha uma porcao linear
 #                        local (de comprimento positivo, situada exatamente na
@@ -109,12 +115,17 @@
 #                        compativeis, sem coincidencia local comprovada.
 #                        Caso tipico de OAE proxima ao limite entre trechos.
 #
-#     Nota (i): por decisao metodologica ORIGINAL, UNICO_TRECHO nao verifica a
-#     compatibilidade com a Via. O criterio de Via so e acionado quando ha
-#     concorrencia (>= 2 codigos). O campo Obs_SNV registra explicitamente se o
-#     unico codigo e ou nao compativel com a Via, para permitir a auditoria
-#     desses casos. O parametro EXIGIR_VIA_COMPATIVEL_EM_UNICO_TRECHO permite
-#     testar a regra alternativa sem reescrever o codigo.
+#     Nota (i): a compatibilidade com a Via e PRE-CONDICAO UNIVERSAL. Um unico
+#     trecho no raio e apenas o unico candidato disponivel, e nao evidencia de
+#     que a OAE pertenca aquela rodovia; se o codigo nao for da Via declarada,
+#     a OAE e classificada TRECHO_DIVERGENTE e nao recebe trecho nem km.
+#     Consequencia registrada: OAE sem Via preenchida ou nao normalizavel nunca
+#     possui codigo compativel e, portanto, nunca e associada.
+#
+#     Nota (ii): a cardinalidade que distingue UNICO_TRECHO e medida sobre
+#     TODOS os codigos do raio, nao apenas sobre os compativeis. Havendo outros
+#     codigos no raio, existiu concorrencia espacial a documentar e a decisao
+#     pertence ao ramo de concorrencia, ainda que so um codigo seja compativel.
 #
 #   Determinacao do sentido (por trecho SNV, nao por OAE):
 #     ANTERIOR  : existe trecho vizinho com vl_km_fina ~= vl_km_inic do trecho,
@@ -143,13 +154,16 @@
 #
 # 7. PARAMETROS EM AVALIACAO (desativados por padrao)
 # -----------------------------------------------------------------------------
-#   Dois pontos foram identificados na revisao tecnica como decisoes
-#   metodologicas em aberto. Nenhum deles foi alterado silenciosamente: ambos
-#   estao implementados como parametros DESLIGADOS por padrao, de modo que a
-#   execucao reproduz exatamente a metodologia original.
+#   Um ponto permanece identificado na revisao tecnica como decisao
+#   metodologica em aberto. Ele nao foi alterado silenciosamente: esta
+#   implementado como parametro DESLIGADO por padrao.
 #
-#   EXIGIR_VIA_COMPATIVEL_EM_UNICO_TRECHO (padrao False)
-#   DISTANCIA_MAXIMA_ASSOCIACAO_M         (padrao None)
+#   DISTANCIA_MAXIMA_ASSOCIACAO_M (padrao None) - nao existe distancia maxima
+#   de aceitacao; o raio de busca e o unico limitante. Ver Dist_SNV_m.
+#
+#   A compatibilidade com a Via deixou de ser parametro: por decisao registrada
+#   do responsavel pela metodologia, ela e agora pre-condicao universal da
+#   associacao (ver criterio UNICO_TRECHO na secao 5).
 #
 # =============================================================================
 
@@ -231,10 +245,6 @@ TOLERANCIA_ESCALA_KM_GEOM = 0.10
 # Limite duro OPCIONAL de associacao, em metros. None = desativado (metodologia
 # original: nao ha distancia maxima; o raio de busca e o unico limitante).
 DISTANCIA_MAXIMA_ASSOCIACAO_M = None
-
-# Regra alternativa OPCIONAL: exigir compatibilidade de Via tambem quando ha um
-# unico codigo no raio. False = metodologia original.
-EXIGIR_VIA_COMPATIVEL_EM_UNICO_TRECHO = False
 
 # Obs_SNV e truncado neste tamanho. 254 mantem a saida exportavel para
 # Shapefile/DBF. Em GeoPackage o valor pode ser ampliado sem perda.
@@ -508,17 +518,33 @@ def selecionar_codigo(por_codigo, via, feicoes, geometria_oae):
         geometria_oae: ponto da OAE em CRS_METRICA.
 
     Retorna:
-        (codigo_ou_None, criterio, observacao_de_auditoria)
+        (codigo_ou_None, criterio, causa, observacao_de_auditoria)
+        "causa" e um token curto que identifica o motivo da NAO associacao;
+        vale None quando um codigo e efetivamente atribuido.
 
     Sequencia de decisao (mutuamente exclusiva e exaustiva):
-        1. Conjunto vazio                      -> SEM_TRECHO
-        2. Exatamente um codigo                -> UNICO_TRECHO
-        3. Nenhum codigo compativel com a Via  -> TRECHO_DIVERGENTE
-        4. Vencedor nao unico                  -> TRECHO_EMPATE
-        5. Vencedor unico com coincidencia     -> TRECHO_COINCIDENTE
-        6. Vencedor unico sem coincidencia     -> TRECHO_FRONTEIRA
+        1. Conjunto vazio                          -> SEM_TRECHO
+        2. Exatamente um codigo no raio:
+           2a. compativel com a Via                -> UNICO_TRECHO
+           2b. incompativel, ou Via ausente        -> TRECHO_DIVERGENTE
+        3. Dois ou mais codigos no raio:
+           3a. nenhum compativel com a Via         -> TRECHO_DIVERGENTE
+           3b. vencedor nao unico                  -> TRECHO_EMPATE
+           3c. vencedor unico com coincidencia     -> TRECHO_COINCIDENTE
+           3d. vencedor unico sem coincidencia     -> TRECHO_FRONTEIRA
 
     Hipoteses metodologicas:
+        - A compatibilidade com a Via declarada da OAE e PRE-CONDICAO UNIVERSAL
+          da associacao: nenhum codigo de BR diferente da Via pode ser
+          atribuido, ainda que seja o unico presente no raio de busca. Em
+          consequencia, todo criterio que devolve codigo (UNICO_TRECHO,
+          TRECHO_COINCIDENTE, TRECHO_FRONTEIRA) devolve necessariamente um
+          codigo compativel. A distancia e criterio de desempate DENTRO do
+          conjunto compativel, jamais criterio de admissao.
+        - A cardinalidade que distingue UNICO_TRECHO e medida sobre TODOS os
+          codigos do raio, nao apenas sobre os compativeis. Havendo outros
+          codigos no raio, existiu concorrencia espacial a documentar, e a
+          decisao pertence ao ramo 3 mesmo que apenas um codigo seja compativel.
         - A distancia minima e calculada sobre TODOS os codigos compativeis com
           a Via, incluindo os nao coincidentes, e ANTES de qualquer regra de
           prioridade. Isso impede que um par coincidente mais distante vencesse
@@ -527,35 +553,53 @@ def selecionar_codigo(por_codigo, via, feicoes, geometria_oae):
           conjunto de distancia minima; ela nunca "resgata" um codigo distante.
         - O parceiro que comprova a coincidencia pode pertencer a outra BR
           (situacao normal em trechos coincidentes), mas o codigo ESCOLHIDO
-          precisa ser sempre compativel com a Via declarada da OAE.
+          precisa ser sempre compativel com a Via declarada da OAE. Por isso
+          TRECHO_COINCIDENTE permanece alcancavel quando ha um unico codigo
+          compativel: a coincidencia fisica de dois codigos SNV sobre o mesmo
+          eixo e a informacao que a auditoria precisa isolar, e ela prevalece
+          sobre a simples contagem de concorrentes compativeis.
         - Empate entre coincidencias nao e resolvido por fronteira: as duas
           regras pertencem ao mesmo nivel de decisao, e recorrer a segunda apos
           o empate da primeira reintroduziria arbitrariedade.
 
     Excecoes:
-        UNICO_TRECHO nao aplica o teste de Via (decisao metodologica original).
-        A compatibilidade e sempre REGISTRADA em Obs_SNV, e o parametro
-        EXIGIR_VIA_COMPATIVEL_EM_UNICO_TRECHO permite avaliar a regra estrita.
+        TRECHO_EMPATE significa que DOIS OU MAIS codigos compativeis com a Via
+        estao a MESMA DISTANCIA da OAE, dentro de TOLERANCIA_EMPATE_DISTANCIA_M.
+        Nenhum criterio objetivo os separa e o desempate por ordem de leitura e
+        proibido; a OAE permanece sem trecho e, portanto, sem km. Os codigos
+        empatados e a distancia comum sao registrados em Obs_SNV.
+
+        Uma OAE cuja Via esteja ausente ou nao seja normalizavel nunca possui
+        codigo compativel e por isso jamais e associada. A causa fica separada
+        da divergencia real, para nao confundir falha de cadastro na origem com
+        divergencia entre a posicao da OAE e a malha proxima.
     """
     if not por_codigo:
-        return None, "SEM_TRECHO", None
+        return None, "SEM_TRECHO", "SEM_CANDIDATO_NO_RAIO", None
 
     if len(por_codigo) == 1:
         codigo = next(iter(por_codigo))
         prefixo = prefixo_codigo(codigo)
-        compativel = via is not None and prefixo == via
-        if EXIGIR_VIA_COMPATIVEL_EM_UNICO_TRECHO and not compativel:
-            return None, "TRECHO_DIVERGENTE", observacao_texto(
-                "UNICO_CODIGO_INCOMPATIVEL_COM_VIA",
+        # Ausencia de concorrencia NAO dispensa a prova de compatibilidade. Um
+        # unico trecho no raio e apenas o unico candidato disponivel, e nao
+        # evidencia de que a OAE pertenca aquela rodovia: associa-lo sem
+        # verificar a Via atribuiria a OAE a outra BR e calcularia o km sobre
+        # ela, justamente nas OAEs isoladas, onde o erro e menos visivel.
+        if via is None or prefixo != via:
+            causa = (
+                "VIA_AUSENTE_OU_NAO_NORMALIZAVEL" if via is None
+                else "UNICO_CODIGO_INCOMPATIVEL_COM_VIA"
+            )
+            return None, "TRECHO_DIVERGENTE", causa, observacao_texto(
+                causa,
                 f"VIA_OAE={via or 'AUSENTE'}",
                 f"CODIGO_NO_RAIO={codigo}",
+                f"PREFIXO_CODIGO={prefixo or 'INDEFINIDO'}",
+                f"DIST_M={por_codigo[codigo]['distancia']:.6f}",
             )
-        # Registrado mesmo quando a decisao nao depende disso: e exatamente o
-        # subconjunto que a auditoria precisa conseguir isolar depois.
-        return codigo, "UNICO_TRECHO", observacao_texto(
-            f"VIA_OAE={via or 'AUSENTE'}",
-            f"PREFIXO_CODIGO={prefixo or 'INDEFINIDO'}",
-            "VIA_COMPATIVEL=SIM" if compativel else "VIA_COMPATIVEL=NAO",
+        return codigo, "UNICO_TRECHO", None, observacao_texto(
+            f"VIA_OAE={via}",
+            f"PREFIXO_CODIGO={prefixo}",
             f"DIST_MIN_M={por_codigo[codigo]['distancia']:.6f}",
         )
 
@@ -565,10 +609,10 @@ def selecionar_codigo(por_codigo, via, feicoes, geometria_oae):
         # na OAE, ou dado presente e efetivamente divergente da malha proxima.
         causa = (
             "VIA_AUSENTE_OU_NAO_NORMALIZAVEL" if via is None
-            else f"NENHUM_CODIGO_COMPATIVEL_COM_VIA={via}"
+            else "NENHUM_CODIGO_COMPATIVEL_COM_VIA"
         )
-        return None, "TRECHO_DIVERGENTE", observacao_texto(
-            causa,
+        return None, "TRECHO_DIVERGENTE", causa, observacao_texto(
+            causa if via is None else f"{causa}={via}",
             f"N_CODIGOS={len(por_codigo)}",
             "CODIGOS_NO_RAIO=" + formatar_lista_codigos(por_codigo),
         )
@@ -618,13 +662,27 @@ def selecionar_codigo(por_codigo, via, feicoes, geometria_oae):
     )
 
     if len(vencedores) != 1:
-        motivo = (
-            "EMPATE_ENTRE_CODIGOS_COINCIDENTES_COMPATIVEIS" if coincidentes
-            else "EMPATE_EXATO_DE_DISTANCIA_ENTRE_CODIGOS_COMPATIVEIS"
+        # O fato metodologico do empate: os codigos listados sao TODOS
+        # compativeis com a Via declarada da OAE e estao TODOS a mesma
+        # distancia dela, dentro de TOLERANCIA_EMPATE_DISTANCIA_M. Como a
+        # compatibilidade ja nao os separa e a distancia tambem nao, nenhum
+        # criterio objetivo resta; desempatar pela ordem de leitura tornaria o
+        # resultado dependente do arquivo de entrada, e por isso e proibido.
+        causa = (
+            "CODIGOS_COINCIDENTES_COMPATIVEIS_EQUIDISTANTES" if coincidentes
+            else "CODIGOS_COMPATIVEIS_EQUIDISTANTES"
         )
-        return None, "TRECHO_EMPATE", observacao_texto(
-            motivo,
+        descricao = (
+            "CODIGOS_COINCIDENTES_COMPATIVEIS_COM_VIA_EQUIDISTANTES_DA_OAE"
+            if coincidentes
+            else "CODIGOS_COMPATIVEIS_COM_VIA_EQUIDISTANTES_DA_OAE"
+        )
+        return None, "TRECHO_EMPATE", causa, observacao_texto(
+            descricao,
+            f"VIA_OAE={via}",
+            f"N_EMPATADOS={len(vencedores)}",
             "CODIGOS_EM_EMPATE=" + formatar_lista_codigos(vencedores),
+            f"DIST_EQUIDISTANTE_M={menor:.6f}",
             auditoria_comum,
         )
 
@@ -634,13 +692,13 @@ def selecionar_codigo(por_codigo, via, feicoes, geometria_oae):
     descartados = [c for c in mais_proximos if c != codigo]
 
     if coincidentes:
-        return codigo, "TRECHO_COINCIDENTE", observacao_texto(
+        return codigo, "TRECHO_COINCIDENTE", None, observacao_texto(
             "SOBREPOSICAO_COM=" + formatar_lista_codigos(coincidentes[codigo]),
             "DESCARTADOS_NO_MINIMO=" + formatar_lista_codigos(descartados)
             if descartados else None,
             auditoria_comum,
         )
-    return codigo, "TRECHO_FRONTEIRA", auditoria_comum
+    return codigo, "TRECHO_FRONTEIRA", None, auditoria_comum
 
 
 # -----------------------------------------------------------------------------
@@ -1255,6 +1313,7 @@ contagem.update(
         "KM_NAO_DETERMINADO": 0,
         "VIA_NAO_NORMALIZAVEL": 0,
         "ALERTA_ESCALA": 0,
+        "ALERTA_EXTREMO": 0,
     }
 )
 
@@ -1296,7 +1355,7 @@ for oae in camada_oae.getFeatures():
         nova.setAttribute(idx_criterio, criterio)
         nova.setAttribute(idx_observacao, "GEOMETRIA_OAE_INVALIDA_OU_MULTIPONTO")
         contagem[criterio] += 1
-        motivos_sem_associacao["GEOMETRIA_OAE_INVALIDA_OU_MULTIPONTO"] += 1
+        motivos_sem_associacao["SEM_TRECHO:GEOMETRIA_OAE_INVALIDA_OU_MULTIPONTO"] += 1
         novas_feicoes.append(nova)
         continue
 
@@ -1348,7 +1407,7 @@ for oae in camada_oae.getFeatures():
     qtd_codigos = len(por_codigo)
     nova.setAttribute(idx_qtd, qtd_codigos)
 
-    codigo_escolhido, criterio, observacao = selecionar_codigo(
+    codigo_escolhido, criterio, causa, observacao = selecionar_codigo(
         por_codigo, via, snv_por_id, geom_oae_metrica
     )
     if qtd_codigos == 0:
@@ -1364,15 +1423,17 @@ for oae in camada_oae.getFeatures():
     if criterio not in CRITERIOS_VALIDOS:
         raise RuntimeError(f"Criterio interno invalido: {criterio}")
 
-    # Pos-condicao verificada em execucao: os dois criterios que resolvem
-    # concorrencia so podem devolver um codigo compativel com a Via e situado
-    # na distancia minima entre os compativeis. Falhar aqui indica defeito de
-    # implementacao, nao dado ruim - por isso interrompe a execucao.
-    if criterio in ("TRECHO_COINCIDENTE", "TRECHO_FRONTEIRA"):
+    # Pos-condicao verificada em execucao. Com a compatibilidade de Via
+    # promovida a pre-condicao universal, os TRES criterios que devolvem codigo
+    # ficam sujeitos a mesma invariante: o codigo atribuido pertence a Via
+    # declarada e esta na distancia minima entre os compativeis. Falhar aqui
+    # indica defeito de implementacao, nao dado ruim - por isso interrompe.
+    if criterio in ("UNICO_TRECHO", "TRECHO_COINCIDENTE", "TRECHO_FRONTEIRA"):
         distancias_compativeis = [
             r["distancia"] for c, r in por_codigo.items() if prefixo_codigo(c) == via
         ]
-        if (not distancias_compativeis
+        if (via is None
+                or not distancias_compativeis
                 or codigo_escolhido is None
                 or prefixo_codigo(codigo_escolhido) != via
                 or not quase_igual(
@@ -1386,7 +1447,11 @@ for oae in camada_oae.getFeatures():
 
     if codigo_escolhido is None:
         nova.setAttribute(idx_observacao, observacao)
-        motivos_sem_associacao[criterio] += 1
+        # Contabiliza a CAUSA, nao apenas o criterio: TRECHO_DIVERGENTE reune
+        # tres situacoes distintas (Via ausente, unico codigo incompativel e
+        # nenhum compativel entre varios), que precisam ser dimensionadas
+        # separadamente para orientar o saneamento do dado de origem.
+        motivos_sem_associacao[f"{criterio}:{causa or 'NAO_INFORMADA'}"] += 1
         novas_feicoes.append(nova)
         continue
 
@@ -1453,10 +1518,25 @@ for oae in camada_oae.getFeatures():
         alerta_escala = f"ALERTA_ESCALA_KM_GEOM={escala:.3f}"
         contagem["ALERTA_ESCALA"] += 1
 
+    # Segundo alerta de auditoria, tambem sem efeito sobre o valor calculado:
+    # a projecao caindo exatamente sobre um extremo indica que a OAE esta no
+    # limite do trecho - frequentemente porque pertence ao trecho vizinho - e
+    # que o km resultante e o proprio limite declarado, e nao uma posicao
+    # interpolada com evidencia propria.
+    fracao = resultado_km["fracao"]
+    alerta_extremo = None
+    if fracao <= 0.0:
+        alerta_extremo = "PROJECAO_NO_EXTREMO=INICIO_GEOM"
+    elif fracao >= 1.0:
+        alerta_extremo = "PROJECAO_NO_EXTREMO=FIM_GEOM"
+    if alerta_extremo:
+        contagem["ALERTA_EXTREMO"] += 1
+
     nova.setAttribute(idx_km, round(resultado_km["km"], 3))
     nova.setAttribute(idx_sentido, sentido)
     nova.setAttribute(idx_observacao, observacao_texto(
         alerta_escala,
+        alerta_extremo,
         "EVIDENCIA=" + info_sentido["evidencia"],
         "ANT=" + info_sentido["anterior"] if info_sentido["anterior"] else None,
         "POS=" + info_sentido["posterior"] if info_sentido["posterior"] else None,
@@ -1503,8 +1583,10 @@ print(f"Total de OAEs:                         {contagem['TOTAL']}")
 print(f"Associadas a um codigo SNV:            {associadas}")
 print(f"Sem codigo SNV atribuido:              {sem_associacao}")
 print(f"Conferencia: {associadas} + {sem_associacao} = {contagem['TOTAL']}")
+print("Causas da nao associacao (criterio : causa):")
 for motivo, quantidade in sorted(motivos_sem_associacao.items()):
-    print(f"  causa: {motivo}: {quantidade}")
+    criterio_motivo, _, causa_motivo = motivo.partition(":")
+    print(f"  {criterio_motivo:20} {causa_motivo:48} {quantidade}")
 print(f"OAEs com Via ausente/nao normalizavel: {contagem['VIA_NAO_NORMALIZAVEL']}")
 print(f"Mediana das extensoes validas:         {mediana_extensao:.3f} m")
 print(f"Feicoes SNV sem geometria/reprojecao:  {snv_descartadas_geometria}")
@@ -1522,6 +1604,7 @@ print(f"Soma calculado + nao calculado:        {soma_km}")
 print(f"km_SNV nao aplicavel (sem trecho):     {sem_associacao}")
 print(f"Conferencia geral: {soma_km} + {sem_associacao} = {contagem['TOTAL']}")
 print(f"km com alerta de escala (>{TOLERANCIA_ESCALA_KM_GEOM:.0%}):     {contagem['ALERTA_ESCALA']}")
+print(f"km com projecao no extremo do trecho:  {contagem['ALERTA_EXTREMO']}")
 print("=" * 72)
 print()
 print("DIAGNOSTICO DO SENTIDO - TRECHOS SNV (NAO OAEs)")
@@ -1539,4 +1622,4 @@ print(f"  TOLERANCIA_CONEXAO_M:            {TOLERANCIA_CONEXAO_M}")
 print(f"  TOLERANCIA_CONTINUIDADE_KM:      {TOLERANCIA_CONTINUIDADE_KM}")
 print(f"  TOLERANCIA_EMPATE_DISTANCIA_M:   {TOLERANCIA_EMPATE_DISTANCIA_M}")
 print(f"  DISTANCIA_MAXIMA_ASSOCIACAO_M:   {DISTANCIA_MAXIMA_ASSOCIACAO_M}")
-print(f"  VIA_EXIGIDA_EM_UNICO_TRECHO:     {EXIGIR_VIA_COMPATIVEL_EM_UNICO_TRECHO}")
+print("  VIA_COMPATIVEL:                  pre-condicao universal (obrigatoria)")

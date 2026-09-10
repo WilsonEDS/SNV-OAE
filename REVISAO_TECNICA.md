@@ -31,11 +31,37 @@ Classificação: **[A]** ambiguidade metodológica · **[E]** erro de programaç
 * **Impacto esperado.** Migração de um subconjunto de `UNICO_TRECHO` para
   `TRECHO_DIVERGENTE`, com queda correspondente de `km_SNV` calculado. Nenhuma
   OAE hoje corretamente associada muda de trecho.
-* **Implementado.** Parâmetro `EXIGIR_VIA_COMPATIVEL_EM_UNICO_TRECHO`
-  (padrão `False` = metodologia original). **Independentemente do parâmetro**, o
-  campo `Obs_SNV` passa a registrar `VIA_OAE=`, `PREFIXO_CODIGO=` e
-  `VIA_COMPATIVEL=SIM|NAO`, o que permite quantificar a exposição por consulta
-  simples antes de decidir a regra definitiva.
+* **CORRIGIDO** — alteração autorizada pelo responsável pela metodologia.
+  A compatibilidade com a `Via` passou a ser **pré-condição universal** da
+  associação: um único trecho no raio é apenas o único candidato disponível, e
+  não evidência de que a OAE pertença àquela rodovia. Código único incompatível
+  → `TRECHO_DIVERGENTE`, com causa `UNICO_CODIGO_INCOMPATIVEL_COM_VIA` e
+  registro de `VIA_OAE`, `CODIGO_NO_RAIO`, `PREFIXO_CODIGO` e `DIST_M` para
+  conferência caso a caso. A verificação de pós-condição do laço principal foi
+  estendida a `UNICO_TRECHO`, de modo que a invariante passa a ser garantida em
+  execução para os três critérios que devolvem código. O parâmetro
+  `EXIGIR_VIA_COMPATIVEL_EM_UNICO_TRECHO` foi removido.
+
+#### 1.1.1 Decisões metodológicas registradas
+
+Quatro pontos decorrentes da mudança foram submetidos ao responsável e
+decididos:
+
+| # | Questão | Decisão |
+|---|---|---|
+| 1 | Conjunto que define a cardinalidade de `UNICO_TRECHO` | **Todos os códigos do raio.** Exige `len(por_codigo) == 1` **e** compatibilidade. Com 3 códigos e 1 compatível → `TRECHO_FRONTEIRA`: houve concorrência espacial a documentar |
+| 2 | OAE com `Via` ausente/não normalizável | **`TRECHO_DIVERGENTE`**, com causa própria `VIA_AUSENTE_OU_NAO_NORMALIZAVEL`, separada da divergência real |
+| 3 | Único compatível que coincide com código de outra BR | **`TRECHO_COINCIDENTE`** prevalece: a coincidência física de dois códigos SNV sobre o mesmo eixo é a informação que a auditoria precisa isolar |
+| 4 | `km_SNV` com sentido indeterminado | **Permanece nulo.** Nenhum km é arbitrado sem evidência de continuidade |
+
+As decisões 1 e 3 não conflitam: coincidência exige um *parceiro* — outro
+código distinto no raio —, impossível quando `len(por_codigo) == 1`. O cenário
+da decisão 3 só ocorre com dois ou mais códigos, onde a decisão 1 já encaminha
+para o ramo de concorrência.
+
+**Consequência registrada da decisão 2:** com o filtro obrigatório, toda OAE sem
+`Via` utilizável passa a ser não associada. O contador de `Via` não normalizável
+já existente no resumo dimensiona esse universo.
 
 ### 1.2 [A] Não existe distância máxima de associação
 
@@ -91,6 +117,21 @@ Classificação: **[A]** ambiguidade metodológica · **[E]** erro de programaç
   de `Via` ausente permanece impreciso, mas manter a classe evita criar um sétimo
   critério fora da especificação.
 
+### 1.5.1 [I] `TRECHO_EMPATE` não declarava o fato que o define
+
+* **Problema.** Os motivos gravados (`EMPATE_EXATO_DE_DISTANCIA_ENTRE_CODIGOS_COMPATIVEIS`)
+  informavam que houve empate, mas não explicitavam o fato metodológico: **dois
+  ou mais códigos compatíveis com a `Via` estão à mesma distância da OAE**, nem
+  registravam qual é essa distância.
+* **CORRIGIDO.** Descrições reescritas para
+  `CODIGOS_COMPATIVEIS_COM_VIA_EQUIDISTANTES_DA_OAE` e
+  `CODIGOS_COINCIDENTES_COMPATIVEIS_COM_VIA_EQUIDISTANTES_DA_OAE`, acompanhadas
+  de `VIA_OAE=`, `N_EMPATADOS=`, `CODIGOS_EM_EMPATE=` e `DIST_EQUIDISTANTE_M=`.
+  A semântica foi documentada na docstring de `selecionar_codigo` e na tabela de
+  critérios do cabeçalho: como a compatibilidade já não os separa e a distância
+  também não, nenhum critério objetivo resta; o desempate por ordem de leitura é
+  proibido e a OAE permanece sem trecho e sem km.
+
 ### 1.6 [R] Empates e concorrentes não eram rastreáveis
 
 * **Problema.** `TRECHO_EMPATE` não registrava quais códigos empataram, e
@@ -120,6 +161,17 @@ Classificação: **[A]** ambiguidade metodológica · **[E]** erro de programaç
   `comprimento_geométrico / extensão_declarada`; desvios acima de
   `TOLERANCIA_ESCALA_KM_GEOM` (10 %) gravam `ALERTA_ESCALA_KM_GEOM=<razão>` em
   `Obs_SNV` e são contabilizados no resumo. **O valor de `km_SNV` não muda.**
+
+### 1.7-b [R] Projeção no extremo do trecho não era sinalizada
+
+* **Problema.** A fração é limitada a [0, 1], o que impede km fora do intervalo
+  declarado — mas o caso em que a projeção cai **exatamente** sobre um extremo
+  saía indistinguível de um km interpolado no interior do trecho.
+* **Consequência.** Uma OAE que na verdade pertence ao trecho vizinho recebe o
+  próprio limite declarado como `km_SNV`, com aparência de valor interpolado.
+* **CORRIGIDO** (alerta de auditoria; **o valor de `km_SNV` não muda**):
+  `PROJECAO_NO_EXTREMO=INICIO_GEOM|FIM_GEOM` em `Obs_SNV` e contador próprio no
+  resumo, ao lado de `ALERTA_ESCALA`.
 
 ### 1.8 [R] Trecho fechado (anel/retorno) tinha causa mascarada
 
@@ -266,7 +318,8 @@ definição dos conjuntos `mais_proximos` e `coincidentes`.
 | # | Condição | Critério |
 |---|---|---|
 | 1 | nenhum código válido no raio | `SEM_TRECHO` |
-| 2 | exatamente um código | `UNICO_TRECHO` |
+| 2a | exatamente um código no raio, **compatível com a `Via`** | `UNICO_TRECHO` |
+| 2b | exatamente um código no raio, **incompatível** ou `Via` ausente | `TRECHO_DIVERGENTE` |
 | 3 | ≥ 2 códigos e nenhum compatível com a `Via` | `TRECHO_DIVERGENTE` |
 | 4 | conjunto vencedor não se reduz a um código | `TRECHO_EMPATE` |
 | 5 | vencedor único **com** coincidência local comprovada | `TRECHO_COINCIDENTE` |
@@ -327,6 +380,8 @@ Arquivo: **`associacao_oae_snv.py`**.
 | 12 | `ALERTA_ESCALA_KM_GEOM` e seu contador | auditoria (§1.7) |
 | 13 | Causa própria para trecho fechado (**mantido nos índices de vizinhança**) | auditoria (§1.8) |
 | 14 | Contadores de causas de não associação e de `Via` não normalizável; bloco de parâmetros no resumo | auditoria |
+| 15 | `selecionar_codigo` devolve **causa estruturada** (4 elementos), permitindo discriminar no resumo as três causas distintas de `TRECHO_DIVERGENTE` | auditoria |
+| 16 | `PROJECAO_NO_EXTREMO=INICIO_GEOM\|FIM_GEOM` quando a fração resulta em 0 ou 1, com contador próprio | auditoria (§1.7-b) |
 
 Os itens 11–13 alteram **textos de causa e rótulos de diagnóstico**, não
 classificações nem valores de `km_SNV`.
@@ -335,7 +390,6 @@ classificações nem valores de `km_SNV`.
 
 | Parâmetro | Padrão | Efeito quando ativado |
 |---|---|---|
-| `EXIGIR_VIA_COMPATIVEL_EM_UNICO_TRECHO` | `False` | §1.1 — código único incompatível passa a `TRECHO_DIVERGENTE` |
 | `DISTANCIA_MAXIMA_ASSOCIACAO_M` | `None` | §1.2 — candidatos além do limite são descartados |
 
 Com os padrões acima, a classificação e o `km_SNV` de cada OAE são **idênticos**
@@ -344,7 +398,7 @@ aos da versão original.
 ### 3.3 Verificação realizada
 
 As funções sem dependência do QGIS foram extraídas e exercitadas fora do
-ambiente QGIS (**64 verificações, todas aprovadas**):
+ambiente QGIS (**75 verificações, todas aprovadas**):
 
 * `normalizar_via` — 14 casos, incluindo a rejeição de `"BR-116/BR-101"` e `"1160"`;
 * `prefixo_codigo`, `numero_finito`, `numero_finito_positivo` (inclusive a
@@ -355,14 +409,21 @@ ambiente QGIS (**64 verificações, todas aprovadas**):
   concorrentes; anel tocando os dois extremos; anterior e posterior no mesmo
   extremo; limiar de conexão em 0,99 m e 1,01 m; **independência da ordem** dos
   vizinhos;
-* `selecionar_codigo` — os seis critérios; par coincidente mais distante **não**
-  vencendo um compatível mais próximo; empate entre coincidências **não**
-  resgatado por fronteira; código incompatível mais próximo **não** vencendo um
-  compatível mais distante; resultado invariante sob **todas as permutações** de
-  um caso com quatro códigos equidistantes; exaustividade dos critérios.
+* `selecionar_codigo` — os seis critérios; código único incompatível e `Via`
+  ausente resultando em `TRECHO_DIVERGENTE` com as causas corretas; três códigos
+  no raio com um só compatível resultando em `TRECHO_FRONTEIRA` (decisão 1);
+  único compatível coincidente resultando em `TRECHO_COINCIDENTE` (decisão 3);
+  redação completa de `TRECHO_EMPATE` (`EQUIDISTANTES_DA_OAE`, `N_EMPATADOS`,
+  `DIST_EQUIDISTANTE_M`); par coincidente mais distante **não** vencendo um
+  compatível mais próximo; empate entre coincidências **não** resgatado por
+  fronteira; código incompatível mais próximo **não** vencendo um compatível
+  mais distante; resultado invariante sob **todas as permutações** de um caso
+  com quatro códigos equidistantes; exaustividade dos critérios; e a
+  **invariante de `Via`** — sobre dez combinações de compatibilidade, todo
+  código devolvido tem prefixo igual à `Via` e toda não associação tem causa.
 
 Não foi possível executar o script completo: `qgis.core` não está disponível
 neste ambiente. **A execução em QGIS sobre as camadas reais permanece
 necessária**, com atenção especial aos números de `UNICO_TRECHO` com
-`VIA_COMPATIVEL=NAO` (§1.1), à distribuição de `Dist_SNV_m` (§1.2), à de
+`Criterio = 'TRECHO_DIVERGENTE'` (§1.1), à distribuição de `Dist_SNV_m` (§1.2), à de
 `MARGEM_M` (§1.6) e à composição de `SEM_VIZINHO_COMPATIVEL` (§1.10).
