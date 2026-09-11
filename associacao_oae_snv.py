@@ -232,7 +232,7 @@ CRS_METRICA = QgsCoordinateReferenceSystem("EPSG:5880")
 
 # O raio de busca e proporcional ao porte da OAE. Nao e um criterio de
 # validade: e apenas a janela de coleta de candidatos.
-FATOR_RAIO = 5.0
+FATOR_RAIO = 2.0
 
 # A publicacao auditada apresentou as mesmas conexoes entre 1 e 20 metros.
 # Um metro basta; nao ampliar automaticamente para buscar vizinhos ausentes.
