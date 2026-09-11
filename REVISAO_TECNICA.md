@@ -382,7 +382,8 @@ Arquivo: **`associacao_oae_snv.py`**.
 | 14 | Contadores de causas de não associação e de `Via` não normalizável; bloco de parâmetros no resumo | auditoria |
 | 15 | `selecionar_codigo` devolve **causa estruturada** (4 elementos), permitindo discriminar no resumo as três causas distintas de `TRECHO_DIVERGENTE` | auditoria |
 | 16 | `PROJECAO_NO_EXTREMO=INICIO_GEOM\|FIM_GEOM` quando a fração resulta em 0 ou 1, com contador próprio | auditoria (§1.7-b) |
-| 17 | `Qtd_Codigos` (inteiro) substituído por **`Rodovias_coincidentes`** (texto): números de BR de todos os códigos do raio, sem repetição, da mais próxima à mais distante, separados por `;`. A contagem de códigos distintos passa a constar sempre em `Obs_SNV` como `N_CODIGOS=`, e os códigos fora do padrão omitidos da lista em `N_CODIGOS_SEM_PREFIXO_VALIDO=` | decisão do responsável |
+| 17 | Novo campo **`Rodovias_coincidentes`** (texto): números de BR das rodovias em **sobreposição comprovada** no local da OAE — as que ocupam o mesmo espaço, parcial ou totalmente. A atribuída primeiro, as demais em ordem numérica, separadas por `;`; NULL sem coincidência. Alimentado pela sobreposição já apurada no critério (`TRECHO_COINCIDENTE` e `TRECHO_EMPATE` entre códigos coincidentes), nunca pela proximidade no raio. `Qtd_Codigos` é mantido | decisão do responsável |
+| 18 | `truncar_texto` extraído de `observacao_texto` e aplicado também ao campo novo; `N_CODIGOS=` estendido aos ramos `UNICO_TRECHO` e `TRECHO_DIVERGENTE` de código único | correção / auditoria |
 
 Os itens 11–13 alteram **textos de causa e rótulos de diagnóstico**, não
 classificações nem valores de `km_SNV`.
@@ -399,7 +400,7 @@ aos da versão original.
 ### 3.3 Verificação realizada
 
 As funções sem dependência do QGIS foram extraídas e exercitadas fora do
-ambiente QGIS (**89 verificações, todas aprovadas**):
+ambiente QGIS (**100 verificações, todas aprovadas**):
 
 * `normalizar_via` — 14 casos, incluindo a rejeição de `"BR-116/BR-101"` e `"1160"`;
 * `prefixo_codigo`, `numero_finito`, `numero_finito_positivo` (inclusive a

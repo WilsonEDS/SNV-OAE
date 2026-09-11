@@ -48,15 +48,24 @@
 #                            geometria do codigo selecionado (evidencia direta
 #                            da qualidade da associacao). NULL se nao associada.
 #       Raio_SNV    (real)   raio de busca aplicado aquela OAE, em metros.
-#       Rodovias_coincidentes (texto) numeros de BR (tres digitos) de TODOS os
-#                            vl_codigo dentro do raio, sem repeticao, ordenados
-#                            da rodovia mais proxima da OAE para a mais
-#                            distante e separados por ";" (ex.: "116;101").
-#                            Descreve o ENTORNO da OAE. ATENCAO: nao confundir
-#                            com o criterio TRECHO_COINCIDENTE - aqui basta a
-#                            rodovia estar no raio, ao passo que o criterio
-#                            exige sobreposicao linear comprovada. A quantidade
-#                            de codigos distintos consta de Obs_SNV (N_CODIGOS).
+#       Qtd_Codigos (inteiro) quantidade de vl_codigo DISTINTOS dentro do raio.
+#       Rodovias_coincidentes (texto) numeros de BR (tres digitos) das rodovias
+#                            em SOBREPOSICAO COMPROVADA no local da OAE, isto e,
+#                            que ocupam o mesmo espaco parcial ou totalmente.
+#                            A rodovia atribuida vem primeiro, as demais em
+#                            ordem numerica, separadas por ";" (ex.: "116;101").
+#                            NULL quando nao houver coincidencia detectada, o
+#                            que torna o levantamento das OAEs sobre rodovias
+#                            coincidentes um filtro direto sobre este campo.
+#                            Alimentado exclusivamente pela sobreposicao apurada
+#                            no criterio TRECHO_COINCIDENTE (e no TRECHO_EMPATE
+#                            entre codigos coincidentes) - proximidade no raio
+#                            NAO preenche este campo.
+#                            Limitacao: espelha o que o criterio detecta. Duas
+#                            rodovias coincidentes cujas geometrias no SNV
+#                            estejam digitalizadas com alguns centimetros de
+#                            diferenca nao satisfazem a equidistancia exigida e
+#                            nao aparecem aqui.
 #       Criterio    (texto)  um dos seis criterios da secao 5.
 #       Sentido_KM  (texto)  INICIO_GEOM_KM_INIC | INICIO_GEOM_KM_FINAL |
 #                            NAO_DETERMINADO | NAO_APLICAVEL.
@@ -220,7 +229,8 @@ CAMPO_TRECHO_SNV = "Trecho_SNV"
 CAMPO_KM_SNV = "km_SNV"
 CAMPO_DIST_SNV = "Dist_SNV_m"
 CAMPO_RAIO_SNV = "Raio_SNV"
-CAMPO_RODOVIAS = "Rodovias_coincidentes"
+CAMPO_QTD_CODIGOS = "Qtd_Codigos"
+CAMPO_RODOVIAS_COINC = "Rodovias_coincidentes"
 CAMPO_CRITERIO = "Criterio"
 CAMPO_SENTIDO_KM = "Sentido_KM"
 CAMPO_OBSERVACAO = "Obs_SNV"
@@ -257,10 +267,9 @@ DISTANCIA_MAXIMA_ASSOCIACAO_M = None
 # Obs_SNV e truncado neste tamanho. 254 mantem a saida exportavel para
 # Shapefile/DBF. Em GeoPackage o valor pode ser ampliado sem perda.
 TAMANHO_MAX_OBS = 254
-# Mesmo limite conservador para Rodovias_coincidentes. Trinta e poucas rodovias
-# num unico raio e inconcebivel, mas o campo e truncado de forma explicita pelo
-# mesmo motivo que Obs_SNV: texto acima do comprimento declarado se perde sem
-# aviso no provedor.
+# Mesmo limite conservador para Rodovias_coincidentes, truncado de forma
+# explicita pelo mesmo motivo que Obs_SNV: texto acima do comprimento declarado
+# se perde sem aviso no provedor.
 TAMANHO_MAX_RODOVIAS = 254
 # Quantos codigos concorrentes sao listados antes de resumir por contagem.
 LIMITE_CODIGOS_LISTADOS = 6
@@ -474,62 +483,6 @@ def observacao_texto(*partes):
                          TAMANHO_MAX_OBS)
 
 
-def rodovias_por_proximidade(por_codigo):
-    """Lista as rodovias presentes no raio de busca, da mais proxima a mais distante.
-
-    Parametros:
-        por_codigo: dict vl_codigo -> {"distancia": float, ...}, contendo todos
-            os codigos distintos dentro do raio, ja reduzidos a menor distancia.
-
-    Retorna:
-        (texto, quantidade_sem_prefixo_valido)
-        texto: numeros de BR de tres digitos separados por ";" (ex.: "116;101"),
-            ou None quando nenhuma rodovia puder ser identificada.
-
-    Hipoteses metodologicas:
-        - Descreve o ENTORNO da OAE, nao o resultado da selecao: entram todos os
-          codigos do raio, independentemente da distancia, da compatibilidade
-          com a Via ou de terem vencido a associacao.
-        - Cada BR aparece UMA vez. Varios trechos da mesma rodovia no raio sao
-          um fato sobre o seccionamento do SNV, nao sobre quantas rodovias
-          existem ali. A contagem de codigos distintos, que a deduplicacao
-          esconde, permanece registrada em Obs_SNV como N_CODIGOS=.
-        - A distancia de uma BR e a MENOR entre os codigos que a possuem, o que
-          mantem a ordenacao coerente com o criterio de selecao.
-        - A ordenacao e por proximidade, e nao alfabetica, porque a posicao na
-          lista passa a carregar informacao: o primeiro item e a rodovia mais
-          proxima da OAE e, nas OAEs associadas, normalmente a atribuida.
-        - Empate de distancia entre BRs distintas e desfeito pelo numero
-          crescente. Sem esse desempate o texto dependeria da ordem de leitura
-          das feicoes, quebrando o determinismo garantido no restante do
-          procedimento.
-
-    Excecoes:
-        Codigo cujos tres primeiros caracteres nao sejam digitos nao produz
-        numero de rodovia e e OMITIDO da lista, para que o campo permaneca
-        estritamente numerico e filtravel. A quantidade de omitidos e devolvida
-        para registro em Obs_SNV, de modo que a anomalia nao desapareca.
-
-    Atencao:
-        O nome do campo de destino evoca TRECHO_COINCIDENTE, mas o conteudo NAO
-        e esse: aqui basta a rodovia estar no raio de busca. TRECHO_COINCIDENTE
-        exige sobreposicao linear comprovada na posicao de menor distancia.
-    """
-    menor_por_rodovia = {}
-    sem_prefixo_valido = 0
-    for codigo, registro in por_codigo.items():
-        rodovia = prefixo_codigo(codigo)
-        if rodovia is None:
-            sem_prefixo_valido += 1
-            continue
-        distancia = registro["distancia"]
-        if rodovia not in menor_por_rodovia or distancia < menor_por_rodovia[rodovia]:
-            menor_por_rodovia[rodovia] = distancia
-
-    ordenadas = sorted(menor_por_rodovia, key=lambda r: (menor_por_rodovia[r], r))
-    return (";".join(ordenadas) or None), sem_prefixo_valido
-
-
 # -----------------------------------------------------------------------------
 # 1.1) FUNCOES DE DECISAO DA ASSOCIACAO OAE x CODIGO SNV
 # -----------------------------------------------------------------------------
@@ -595,6 +548,68 @@ def codigos_sobrepostos(registro_a, registro_b, feicoes, geometria_oae=None):
     return False
 
 
+def rodovias_coincidentes_texto(coincidentes, codigo_escolhido=None):
+    """Converte a coincidencia detectada na lista de rodovias que a compoem.
+
+    Parametros:
+        coincidentes: dict codigo -> [codigos parceiros], montado em
+            selecionar_codigo, contendo apenas pares com sobreposicao linear
+            comprovada na posicao de menor distancia da OAE.
+        codigo_escolhido: vl_codigo atribuido a OAE, quando houver.
+
+    Retorna:
+        (texto, rodovias_distintas)
+        texto: numeros de BR separados por ";" (ex.: "116;101"), ou None quando
+            nao houver coincidencia detectada.
+        rodovias_distintas: quantidade de BRs distintas envolvidas.
+
+    Hipoteses metodologicas:
+        - Identifica as OAEs situadas sobre rodovias COINCIDENTES, isto e,
+          rodovias que ocupam o mesmo espaco, parcial ou totalmente. Estar
+          proximo nao basta: o conjunto vem exclusivamente da sobreposicao
+          linear ja comprovada pelo criterio, nunca do raio de busca.
+        - A rodovia ATRIBUIDA encabeca a lista, tornando o campo autossuficiente
+          na leitura ("aqui a BR-116 e a BR-101 sao coincidentes") sem exigir o
+          cruzamento com Trecho_SNV. As demais seguem em ordem numerica.
+        - Sem codigo atribuido (TRECHO_EMPATE), todas as BRs saem em ordem
+          numerica crescente: os codigos estao todos a mesma distancia minima,
+          de modo que nao ha criterio de proximidade que os separe, e a ordem
+          numerica assegura o determinismo exigido no restante do procedimento.
+
+    Excecoes:
+        Dois codigos DISTINTOS da MESMA BR podem se sobrepor - geometria
+        duplicada no SNV, e nao coincidencia entre rodovias. Nesse caso a lista
+        deduplicada resulta numa unica BR. O texto permanece verdadeiro, e a
+        contagem devolvida permite ao chamador sinalizar a anomalia, de modo que
+        a OAE nao seja lida como estando sobre rodovias coincidentes.
+
+    Limitacao registrada:
+        O campo espelha estritamente o que o criterio detecta. Duas rodovias
+        fisicamente coincidentes cujas geometrias no SNV estejam digitalizadas
+        com alguns centimetros de diferenca nao satisfazem a equidistancia
+        exigida e nao sao detectadas aqui.
+    """
+    if not coincidentes:
+        return None, 0
+
+    envolvidos = set()
+    for codigo, parceiros in coincidentes.items():
+        envolvidos.add(codigo)
+        envolvidos.update(parceiros)
+
+    rodovias = {prefixo_codigo(c) for c in envolvidos}
+    rodovias.discard(None)
+    if not rodovias:
+        return None, 0
+
+    rodovia_escolhida = prefixo_codigo(codigo_escolhido) if codigo_escolhido else None
+    if rodovia_escolhida in rodovias:
+        ordenadas = [rodovia_escolhida] + sorted(rodovias - {rodovia_escolhida})
+    else:
+        ordenadas = sorted(rodovias)
+    return ";".join(ordenadas), len(rodovias)
+
+
 def selecionar_codigo(por_codigo, via, feicoes, geometria_oae):
     """Seleciona um unico vl_codigo para a OAE e classifica a associacao.
 
@@ -607,9 +622,13 @@ def selecionar_codigo(por_codigo, via, feicoes, geometria_oae):
         geometria_oae: ponto da OAE em CRS_METRICA.
 
     Retorna:
-        (codigo_ou_None, criterio, causa, observacao_de_auditoria)
+        (codigo_ou_None, criterio, causa, rodovias_coincidentes, observacao)
         "causa" e um token curto que identifica o motivo da NAO associacao;
         vale None quando um codigo e efetivamente atribuido.
+        "rodovias_coincidentes" e a lista de BRs em sobreposicao comprovada
+        (ver rodovias_coincidentes_texto), ou None quando nao houver
+        coincidencia detectada. Como o dicionario de coincidencias so existe
+        dentro desta funcao, e aqui que ele precisa ser exposto.
 
     Sequencia de decisao (mutuamente exclusiva e exaustiva):
         1. Conjunto vazio                          -> SEM_TRECHO
@@ -664,7 +683,7 @@ def selecionar_codigo(por_codigo, via, feicoes, geometria_oae):
         divergencia entre a posicao da OAE e a malha proxima.
     """
     if not por_codigo:
-        return None, "SEM_TRECHO", "SEM_CANDIDATO_NO_RAIO", None
+        return None, "SEM_TRECHO", "SEM_CANDIDATO_NO_RAIO", None, None
 
     if len(por_codigo) == 1:
         codigo = next(iter(por_codigo))
@@ -679,7 +698,7 @@ def selecionar_codigo(por_codigo, via, feicoes, geometria_oae):
                 "VIA_AUSENTE_OU_NAO_NORMALIZAVEL" if via is None
                 else "UNICO_CODIGO_INCOMPATIVEL_COM_VIA"
             )
-            return None, "TRECHO_DIVERGENTE", causa, observacao_texto(
+            return None, "TRECHO_DIVERGENTE", causa, None, observacao_texto(
                 causa,
                 f"VIA_OAE={via or 'AUSENTE'}",
                 f"CODIGO_NO_RAIO={codigo}",
@@ -687,7 +706,7 @@ def selecionar_codigo(por_codigo, via, feicoes, geometria_oae):
                 f"DIST_M={por_codigo[codigo]['distancia']:.6f}",
                 f"N_CODIGOS={len(por_codigo)}",
             )
-        return codigo, "UNICO_TRECHO", None, observacao_texto(
+        return codigo, "UNICO_TRECHO", None, None, observacao_texto(
             f"VIA_OAE={via}",
             f"PREFIXO_CODIGO={prefixo}",
             f"DIST_MIN_M={por_codigo[codigo]['distancia']:.6f}",
@@ -702,7 +721,7 @@ def selecionar_codigo(por_codigo, via, feicoes, geometria_oae):
             "VIA_AUSENTE_OU_NAO_NORMALIZAVEL" if via is None
             else "NENHUM_CODIGO_COMPATIVEL_COM_VIA"
         )
-        return None, "TRECHO_DIVERGENTE", causa, observacao_texto(
+        return None, "TRECHO_DIVERGENTE", causa, None, observacao_texto(
             causa if via is None else f"{causa}={via}",
             f"N_CODIGOS={len(por_codigo)}",
             "CODIGOS_NO_RAIO=" + formatar_lista_codigos(por_codigo),
@@ -768,7 +787,12 @@ def selecionar_codigo(por_codigo, via, feicoes, geometria_oae):
             if coincidentes
             else "CODIGOS_COMPATIVEIS_COM_VIA_EQUIDISTANTES_DA_OAE"
         )
-        return None, "TRECHO_EMPATE", causa, observacao_texto(
+        # A OAE empatada entre codigos coincidentes esta fisicamente sobre
+        # rodovias coincidentes, ainda que a associacao nao tenha sido
+        # resolvida: excluí-la do levantamento a deixaria de fora de um
+        # conjunto ao qual pertence.
+        rodovias_coinc, _ = rodovias_coincidentes_texto(coincidentes)
+        return None, "TRECHO_EMPATE", causa, rodovias_coinc, observacao_texto(
             descricao,
             f"VIA_OAE={via}",
             f"N_EMPATADOS={len(vencedores)}",
@@ -783,13 +807,20 @@ def selecionar_codigo(por_codigo, via, feicoes, geometria_oae):
     descartados = [c for c in mais_proximos if c != codigo]
 
     if coincidentes:
-        return codigo, "TRECHO_COINCIDENTE", None, observacao_texto(
+        rodovias_coinc, n_rodovias = rodovias_coincidentes_texto(coincidentes, codigo)
+        # Sobreposicao entre codigos distintos da MESMA BR e geometria duplicada
+        # no SNV, nao coincidencia entre rodovias: sinalizado para que a OAE nao
+        # seja lida como estando sobre rodovias coincidentes.
+        anomalia = ("COINCIDENCIA_ENTRE_CODIGOS_DA_MESMA_BR"
+                    if n_rodovias == 1 else None)
+        return codigo, "TRECHO_COINCIDENTE", None, rodovias_coinc, observacao_texto(
+            anomalia,
             "SOBREPOSICAO_COM=" + formatar_lista_codigos(coincidentes[codigo]),
             "DESCARTADOS_NO_MINIMO=" + formatar_lista_codigos(descartados)
             if descartados else None,
             auditoria_comum,
         )
-    return codigo, "TRECHO_FRONTEIRA", None, auditoria_comum
+    return codigo, "TRECHO_FRONTEIRA", None, None, auditoria_comum
 
 
 # -----------------------------------------------------------------------------
@@ -963,7 +994,8 @@ campos_novos = {
     CAMPO_KM_SNV,
     CAMPO_DIST_SNV,
     CAMPO_RAIO_SNV,
-    CAMPO_RODOVIAS,
+    CAMPO_QTD_CODIGOS,
+    CAMPO_RODOVIAS_COINC,
     CAMPO_CRITERIO,
     CAMPO_SENTIDO_KM,
     CAMPO_OBSERVACAO,
@@ -1373,7 +1405,8 @@ provedor_saida.addAttributes(
         QgsField(CAMPO_KM_SNV, QVariant.Double, len=20, prec=3),
         QgsField(CAMPO_DIST_SNV, QVariant.Double, len=20, prec=3),
         QgsField(CAMPO_RAIO_SNV, QVariant.Double, len=20, prec=3),
-        QgsField(CAMPO_RODOVIAS, QVariant.String, len=TAMANHO_MAX_RODOVIAS),
+        QgsField(CAMPO_QTD_CODIGOS, QVariant.Int),
+        QgsField(CAMPO_RODOVIAS_COINC, QVariant.String, len=TAMANHO_MAX_RODOVIAS),
         QgsField(CAMPO_CRITERIO, QVariant.String, len=30),
         QgsField(CAMPO_SENTIDO_KM, QVariant.String, len=30),
         QgsField(CAMPO_OBSERVACAO, QVariant.String, len=TAMANHO_MAX_OBS),
@@ -1385,7 +1418,8 @@ idx_trecho = saida.fields().indexOf(CAMPO_TRECHO_SNV)
 idx_km = saida.fields().indexOf(CAMPO_KM_SNV)
 idx_dist = saida.fields().indexOf(CAMPO_DIST_SNV)
 idx_raio = saida.fields().indexOf(CAMPO_RAIO_SNV)
-idx_rodovias = saida.fields().indexOf(CAMPO_RODOVIAS)
+idx_qtd = saida.fields().indexOf(CAMPO_QTD_CODIGOS)
+idx_rodovias_coinc = saida.fields().indexOf(CAMPO_RODOVIAS_COINC)
 idx_criterio = saida.fields().indexOf(CAMPO_CRITERIO)
 idx_sentido = saida.fields().indexOf(CAMPO_SENTIDO_KM)
 idx_observacao = saida.fields().indexOf(CAMPO_OBSERVACAO)
@@ -1405,6 +1439,8 @@ contagem.update(
         "VIA_NAO_NORMALIZAVEL": 0,
         "ALERTA_ESCALA": 0,
         "ALERTA_EXTREMO": 0,
+        "COINCIDENCIA_DETECTADA": 0,
+        "COINCIDENCIA_MESMA_BR": 0,
     }
 )
 
@@ -1442,8 +1478,7 @@ for oae in camada_oae.getFeatures():
     geom_oae_metrica = geometria_pontual_metrica(oae, transformacao_oae)
     if geom_oae_metrica is None:
         criterio = "SEM_TRECHO"
-        # Rodovias_coincidentes fica NULL: nenhuma rodovia chegou a ser
-        # avaliada, o que e diferente de ter sido avaliada e nada encontrado.
+        nova.setAttribute(idx_qtd, 0)
         nova.setAttribute(idx_criterio, criterio)
         nova.setAttribute(idx_observacao, "GEOMETRIA_OAE_INVALIDA_OU_MULTIPONTO")
         contagem[criterio] += 1
@@ -1497,12 +1532,17 @@ for oae in camada_oae.getFeatures():
         ]
 
     qtd_codigos = len(por_codigo)
-    rodovias, codigos_sem_prefixo = rodovias_por_proximidade(por_codigo)
-    nova.setAttribute(idx_rodovias, truncar_texto(rodovias, TAMANHO_MAX_RODOVIAS))
+    nova.setAttribute(idx_qtd, qtd_codigos)
 
-    codigo_escolhido, criterio, causa, observacao = selecionar_codigo(
+    codigo_escolhido, criterio, causa, rodovias_coinc, observacao = selecionar_codigo(
         por_codigo, via, snv_por_id, geom_oae_metrica
     )
+    nova.setAttribute(idx_rodovias_coinc,
+                      truncar_texto(rodovias_coinc, TAMANHO_MAX_RODOVIAS))
+    if rodovias_coinc:
+        contagem["COINCIDENCIA_DETECTADA"] += 1
+        if ";" not in rodovias_coinc:
+            contagem["COINCIDENCIA_MESMA_BR"] += 1
     if qtd_codigos == 0:
         observacao = observacao_texto(
             observacao,
@@ -1513,12 +1553,6 @@ for oae in camada_oae.getFeatures():
             "N_CODIGOS=0",
             f"RAIO_M={raio_procura:.3f}",
         )
-    # Codigo fora do padrao nao gera numero de rodovia e fica de fora da lista;
-    # a omissao e registrada para nao desaparecer do resultado.
-    if codigos_sem_prefixo:
-        observacao = observacao_texto(
-            observacao, f"N_CODIGOS_SEM_PREFIXO_VALIDO={codigos_sem_prefixo}")
-
     if criterio not in CRITERIOS_VALIDOS:
         raise RuntimeError(f"Criterio interno invalido: {criterio}")
 
@@ -1704,6 +1738,17 @@ print(f"km_SNV nao aplicavel (sem trecho):     {sem_associacao}")
 print(f"Conferencia geral: {soma_km} + {sem_associacao} = {contagem['TOTAL']}")
 print(f"km com alerta de escala (>{TOLERANCIA_ESCALA_KM_GEOM:.0%}):     {contagem['ALERTA_ESCALA']}")
 print(f"km com projecao no extremo do trecho:  {contagem['ALERTA_EXTREMO']}")
+print("=" * 72)
+print()
+print("RESUMO - OAEs sobre rodovias coincidentes")
+print("=" * 72)
+print(f"OAEs com coincidencia detectada:       {contagem['COINCIDENCIA_DETECTADA']}")
+print(f"  em TRECHO_COINCIDENTE:               {contagem['TRECHO_COINCIDENTE']}")
+print(f"  em TRECHO_EMPATE (nao associadas):   "
+      f"{contagem['COINCIDENCIA_DETECTADA'] - contagem['TRECHO_COINCIDENTE']}")
+# Sobreposicao entre codigos distintos da mesma BR e geometria duplicada no SNV,
+# nao coincidencia entre rodovias: nao integra o levantamento pretendido.
+print(f"  entre codigos da MESMA BR (anomalia):{contagem['COINCIDENCIA_MESMA_BR']}")
 print("=" * 72)
 print()
 print("DIAGNOSTICO DO SENTIDO - TRECHOS SNV (NAO OAEs)")
