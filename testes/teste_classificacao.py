@@ -5,7 +5,8 @@ fonte = (pathlib.Path(__file__).resolve().parent.parent / 'associacao_oae_snv.py
 arvore = ast.parse(fonte)
 
 nomes_func = {"codigo_valido", "prefixo_codigo", "quase_igual",
-              "formatar_lista_codigos", "observacao_texto", "selecionar_codigo"}
+              "formatar_lista_codigos", "truncar_texto", "observacao_texto",
+              "selecionar_codigo", "rodovias_por_proximidade"}
 nomes_const = {"TOLERANCIA_EMPATE_DISTANCIA_M", "TAMANHO_MAX_OBS",
                "LIMITE_CODIGOS_LISTADOS"}
 
@@ -167,5 +168,63 @@ for base_c, via in combinacoes:
 PARES = set()
 c_sel, crit, _, _ = sel(entrada(**{"116A": 1.0, "101X": 0.5}), "116", None, None)
 checa("nunca escolhe BR divergente", (c_sel, crit), ("116A", "TRECHO_FRONTEIRA"))
+
+# --- 18) Rodovias_coincidentes: lista das rodovias do raio -------------------
+rod = ns["rodovias_por_proximidade"]
+
+def entrada_d(**codigos):
+    return {c: {"distancia": d} for c, d in codigos.items()}
+
+# Caso de referencia do responsavel: duas feicoes da BR-116 a 3 m e a BR-101 a
+# 40 m -> a mais proxima primeiro, BR repetida uma unica vez.
+texto, sem_prefixo = rod(entrada_d(**{
+    "116BMG0450": 3.0, "116BMG0460": 3.0, "101BMG0330": 40.0}))
+checa("caso de referencia", (texto, sem_prefixo), ("116;101", 0))
+
+# Rodovia unica: tres digitos, sem separador.
+checa("rodovia unica", rod(entrada_d(**{"116BMG0450": 3.0})), ("116", 0))
+
+# Conjunto vazio -> None.
+checa("sem candidatos", rod({}), (None, 0))
+
+# A distancia de uma BR e a MENOR entre seus codigos: 116 entra com 2.0.
+checa("menor distancia por BR",
+      rod(entrada_d(**{"116A": 9.0, "116B": 2.0, "101X": 5.0}))[0], "116;101")
+
+# Ordem estritamente por proximidade, nao alfabetica.
+checa("ordem por proximidade",
+      rod(entrada_d(**{"101X": 50.0, "116A": 1.0, "222B": 10.0}))[0], "116;222;101")
+
+# Empate de distancia entre BRs distintas -> desempate por numero crescente.
+checa("empate desempatado por numero",
+      rod(entrada_d(**{"222B": 4.0, "101X": 4.0, "116A": 4.0}))[0], "101;116;222")
+
+# Codigo fora do padrao: omitido da lista e contabilizado.
+checa("prefixo invalido omitido",
+      rod(entrada_d(**{"AB1BMG0450": 1.0, "116BMG0450": 3.0})), ("116", 1))
+
+# Todos fora do padrao -> None, com a contagem preservada.
+checa("todos invalidos", rod(entrada_d(**{"ABC": 1.0, "XYZ": 2.0})), (None, 2))
+
+# Determinismo: o texto nao depende da ordem de insercao do dicionario.
+base_rod = {"116A": 4.0, "101X": 4.0, "222B": 4.0, "116B": 9.0}
+textos = set()
+for ordem in itertools.permutations(base_rod):
+    textos.add(rod({c: {"distancia": base_rod[c]} for c in ordem})[0])
+checa("ordem de insercao irrelevante", textos, {"101;116;222"})
+
+# --- 19) N_CODIGOS preservado em todos os ramos -----------------------------
+# A contagem que Qtd_Codigos fornecia nao pode sumir com a troca do campo.
+PARES = set()
+for pc, via, rotulo in [
+    (entrada(**{"116A": 1.0}), "116", "UNICO_TRECHO"),
+    (entrada(**{"101A": 1.0}), "116", "DIVERGENTE de codigo unico"),
+    (entrada(**{"101A": 1.0, "222B": 2.0}), "116", "DIVERGENTE de varios"),
+    (entrada(**{"116A": 1.0, "116B": 2.0}), "116", "FRONTEIRA"),
+    (entrada(**{"116A": 1.0, "116B": 1.0}), "116", "EMPATE"),
+]:
+    _, _, _, obs = sel(pc, via, None, None)
+    assert obs and "N_CODIGOS=" in obs, (rotulo, obs)
+    ok += 1
 
 print(f"{ok} verificacoes OK")

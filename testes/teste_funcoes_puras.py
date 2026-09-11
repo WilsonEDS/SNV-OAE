@@ -7,7 +7,7 @@ linhas = fonte.splitlines(True)
 
 alvos = {"numero_finito_positivo", "numero_finito", "normalizar_via",
          "prefixo_codigo", "quase_igual", "formatar_lista_codigos",
-         "observacao_texto", "resolver_orientacao"}
+         "truncar_texto", "observacao_texto", "resolver_orientacao"}
 consts = {"TOLERANCIA_CONEXAO_M", "TAMANHO_MAX_OBS", "LIMITE_CODIGOS_LISTADOS"}
 
 ns = {"math": math, "re": re, "NULL": object()}

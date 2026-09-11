@@ -48,7 +48,15 @@
 #                            geometria do codigo selecionado (evidencia direta
 #                            da qualidade da associacao). NULL se nao associada.
 #       Raio_SNV    (real)   raio de busca aplicado aquela OAE, em metros.
-#       Qtd_Codigos (inteiro) quantidade de vl_codigo DISTINTOS dentro do raio.
+#       Rodovias_coincidentes (texto) numeros de BR (tres digitos) de TODOS os
+#                            vl_codigo dentro do raio, sem repeticao, ordenados
+#                            da rodovia mais proxima da OAE para a mais
+#                            distante e separados por ";" (ex.: "116;101").
+#                            Descreve o ENTORNO da OAE. ATENCAO: nao confundir
+#                            com o criterio TRECHO_COINCIDENTE - aqui basta a
+#                            rodovia estar no raio, ao passo que o criterio
+#                            exige sobreposicao linear comprovada. A quantidade
+#                            de codigos distintos consta de Obs_SNV (N_CODIGOS).
 #       Criterio    (texto)  um dos seis criterios da secao 5.
 #       Sentido_KM  (texto)  INICIO_GEOM_KM_INIC | INICIO_GEOM_KM_FINAL |
 #                            NAO_DETERMINADO | NAO_APLICAVEL.
@@ -212,7 +220,7 @@ CAMPO_TRECHO_SNV = "Trecho_SNV"
 CAMPO_KM_SNV = "km_SNV"
 CAMPO_DIST_SNV = "Dist_SNV_m"
 CAMPO_RAIO_SNV = "Raio_SNV"
-CAMPO_QTD_CODIGOS = "Qtd_Codigos"
+CAMPO_RODOVIAS = "Rodovias_coincidentes"
 CAMPO_CRITERIO = "Criterio"
 CAMPO_SENTIDO_KM = "Sentido_KM"
 CAMPO_OBSERVACAO = "Obs_SNV"
@@ -249,6 +257,11 @@ DISTANCIA_MAXIMA_ASSOCIACAO_M = None
 # Obs_SNV e truncado neste tamanho. 254 mantem a saida exportavel para
 # Shapefile/DBF. Em GeoPackage o valor pode ser ampliado sem perda.
 TAMANHO_MAX_OBS = 254
+# Mesmo limite conservador para Rodovias_coincidentes. Trinta e poucas rodovias
+# num unico raio e inconcebivel, mas o campo e truncado de forma explicita pelo
+# mesmo motivo que Obs_SNV: texto acima do comprimento declarado se perde sem
+# aviso no provedor.
+TAMANHO_MAX_RODOVIAS = 254
 # Quantos codigos concorrentes sao listados antes de resumir por contagem.
 LIMITE_CODIGOS_LISTADOS = 6
 
@@ -419,8 +432,33 @@ def formatar_lista_codigos(codigos, limite=LIMITE_CODIGOS_LISTADOS):
     return ",".join(ordenados[:limite]) + f",+{len(ordenados) - limite}"
 
 
+def truncar_texto(texto, limite):
+    """Limita um texto ao comprimento declarado do campo que vai recebe-lo.
+
+    Parametros:
+        texto: conteudo a gravar, ou None.
+        limite: comprimento maximo do campo de destino.
+
+    Retorna:
+        str de no maximo `limite` caracteres, ou None se nao houver texto.
+
+    Hipotese metodologica:
+        Texto excedendo o comprimento declarado do campo e truncado em silencio
+        - ou rejeitado - pelo provedor, o que faria a trilha de rastreabilidade
+        desaparecer sem aviso. O corte e feito aqui, de forma deterministica, e
+        sinalizado com o marcador [TRUNCADO], de modo que a perda seja sempre
+        visivel no proprio dado.
+    """
+    if not texto:
+        return None
+    if len(texto) <= limite:
+        return texto
+    marcador = "...[TRUNCADO]"
+    return texto[: limite - len(marcador)] + marcador
+
+
 def observacao_texto(*partes):
-    """Concatena fragmentos nao vazios da trilha de auditoria, truncando ao limite.
+    """Concatena fragmentos nao vazios da trilha de rastreabilidade.
 
     Retorna:
         str com os fragmentos separados por "; ", limitada a TAMANHO_MAX_OBS, ou
@@ -432,13 +470,64 @@ def observacao_texto(*partes):
         eventual truncamento preserve sempre a informacao essencial e o registre
         de forma visivel com o marcador [TRUNCADO].
     """
-    texto = "; ".join(parte for parte in partes if parte)
-    if not texto:
-        return None
-    if len(texto) <= TAMANHO_MAX_OBS:
-        return texto
-    marcador = "...[TRUNCADO]"
-    return texto[: TAMANHO_MAX_OBS - len(marcador)] + marcador
+    return truncar_texto("; ".join(parte for parte in partes if parte),
+                         TAMANHO_MAX_OBS)
+
+
+def rodovias_por_proximidade(por_codigo):
+    """Lista as rodovias presentes no raio de busca, da mais proxima a mais distante.
+
+    Parametros:
+        por_codigo: dict vl_codigo -> {"distancia": float, ...}, contendo todos
+            os codigos distintos dentro do raio, ja reduzidos a menor distancia.
+
+    Retorna:
+        (texto, quantidade_sem_prefixo_valido)
+        texto: numeros de BR de tres digitos separados por ";" (ex.: "116;101"),
+            ou None quando nenhuma rodovia puder ser identificada.
+
+    Hipoteses metodologicas:
+        - Descreve o ENTORNO da OAE, nao o resultado da selecao: entram todos os
+          codigos do raio, independentemente da distancia, da compatibilidade
+          com a Via ou de terem vencido a associacao.
+        - Cada BR aparece UMA vez. Varios trechos da mesma rodovia no raio sao
+          um fato sobre o seccionamento do SNV, nao sobre quantas rodovias
+          existem ali. A contagem de codigos distintos, que a deduplicacao
+          esconde, permanece registrada em Obs_SNV como N_CODIGOS=.
+        - A distancia de uma BR e a MENOR entre os codigos que a possuem, o que
+          mantem a ordenacao coerente com o criterio de selecao.
+        - A ordenacao e por proximidade, e nao alfabetica, porque a posicao na
+          lista passa a carregar informacao: o primeiro item e a rodovia mais
+          proxima da OAE e, nas OAEs associadas, normalmente a atribuida.
+        - Empate de distancia entre BRs distintas e desfeito pelo numero
+          crescente. Sem esse desempate o texto dependeria da ordem de leitura
+          das feicoes, quebrando o determinismo garantido no restante do
+          procedimento.
+
+    Excecoes:
+        Codigo cujos tres primeiros caracteres nao sejam digitos nao produz
+        numero de rodovia e e OMITIDO da lista, para que o campo permaneca
+        estritamente numerico e filtravel. A quantidade de omitidos e devolvida
+        para registro em Obs_SNV, de modo que a anomalia nao desapareca.
+
+    Atencao:
+        O nome do campo de destino evoca TRECHO_COINCIDENTE, mas o conteudo NAO
+        e esse: aqui basta a rodovia estar no raio de busca. TRECHO_COINCIDENTE
+        exige sobreposicao linear comprovada na posicao de menor distancia.
+    """
+    menor_por_rodovia = {}
+    sem_prefixo_valido = 0
+    for codigo, registro in por_codigo.items():
+        rodovia = prefixo_codigo(codigo)
+        if rodovia is None:
+            sem_prefixo_valido += 1
+            continue
+        distancia = registro["distancia"]
+        if rodovia not in menor_por_rodovia or distancia < menor_por_rodovia[rodovia]:
+            menor_por_rodovia[rodovia] = distancia
+
+    ordenadas = sorted(menor_por_rodovia, key=lambda r: (menor_por_rodovia[r], r))
+    return (";".join(ordenadas) or None), sem_prefixo_valido
 
 
 # -----------------------------------------------------------------------------
@@ -596,11 +685,13 @@ def selecionar_codigo(por_codigo, via, feicoes, geometria_oae):
                 f"CODIGO_NO_RAIO={codigo}",
                 f"PREFIXO_CODIGO={prefixo or 'INDEFINIDO'}",
                 f"DIST_M={por_codigo[codigo]['distancia']:.6f}",
+                f"N_CODIGOS={len(por_codigo)}",
             )
         return codigo, "UNICO_TRECHO", None, observacao_texto(
             f"VIA_OAE={via}",
             f"PREFIXO_CODIGO={prefixo}",
             f"DIST_MIN_M={por_codigo[codigo]['distancia']:.6f}",
+            f"N_CODIGOS={len(por_codigo)}",
         )
 
     compativeis = [c for c in por_codigo if via is not None and prefixo_codigo(c) == via]
@@ -872,7 +963,7 @@ campos_novos = {
     CAMPO_KM_SNV,
     CAMPO_DIST_SNV,
     CAMPO_RAIO_SNV,
-    CAMPO_QTD_CODIGOS,
+    CAMPO_RODOVIAS,
     CAMPO_CRITERIO,
     CAMPO_SENTIDO_KM,
     CAMPO_OBSERVACAO,
@@ -1282,7 +1373,7 @@ provedor_saida.addAttributes(
         QgsField(CAMPO_KM_SNV, QVariant.Double, len=20, prec=3),
         QgsField(CAMPO_DIST_SNV, QVariant.Double, len=20, prec=3),
         QgsField(CAMPO_RAIO_SNV, QVariant.Double, len=20, prec=3),
-        QgsField(CAMPO_QTD_CODIGOS, QVariant.Int),
+        QgsField(CAMPO_RODOVIAS, QVariant.String, len=TAMANHO_MAX_RODOVIAS),
         QgsField(CAMPO_CRITERIO, QVariant.String, len=30),
         QgsField(CAMPO_SENTIDO_KM, QVariant.String, len=30),
         QgsField(CAMPO_OBSERVACAO, QVariant.String, len=TAMANHO_MAX_OBS),
@@ -1294,7 +1385,7 @@ idx_trecho = saida.fields().indexOf(CAMPO_TRECHO_SNV)
 idx_km = saida.fields().indexOf(CAMPO_KM_SNV)
 idx_dist = saida.fields().indexOf(CAMPO_DIST_SNV)
 idx_raio = saida.fields().indexOf(CAMPO_RAIO_SNV)
-idx_qtd = saida.fields().indexOf(CAMPO_QTD_CODIGOS)
+idx_rodovias = saida.fields().indexOf(CAMPO_RODOVIAS)
 idx_criterio = saida.fields().indexOf(CAMPO_CRITERIO)
 idx_sentido = saida.fields().indexOf(CAMPO_SENTIDO_KM)
 idx_observacao = saida.fields().indexOf(CAMPO_OBSERVACAO)
@@ -1351,7 +1442,8 @@ for oae in camada_oae.getFeatures():
     geom_oae_metrica = geometria_pontual_metrica(oae, transformacao_oae)
     if geom_oae_metrica is None:
         criterio = "SEM_TRECHO"
-        nova.setAttribute(idx_qtd, 0)
+        # Rodovias_coincidentes fica NULL: nenhuma rodovia chegou a ser
+        # avaliada, o que e diferente de ter sido avaliada e nada encontrado.
         nova.setAttribute(idx_criterio, criterio)
         nova.setAttribute(idx_observacao, "GEOMETRIA_OAE_INVALIDA_OU_MULTIPONTO")
         contagem[criterio] += 1
@@ -1405,7 +1497,8 @@ for oae in camada_oae.getFeatures():
         ]
 
     qtd_codigos = len(por_codigo)
-    nova.setAttribute(idx_qtd, qtd_codigos)
+    rodovias, codigos_sem_prefixo = rodovias_por_proximidade(por_codigo)
+    nova.setAttribute(idx_rodovias, truncar_texto(rodovias, TAMANHO_MAX_RODOVIAS))
 
     codigo_escolhido, criterio, causa, observacao = selecionar_codigo(
         por_codigo, via, snv_por_id, geom_oae_metrica
@@ -1417,8 +1510,14 @@ for oae in camada_oae.getFeatures():
             if feicoes_sem_codigo_no_raio else None,
             f"{feicoes_alem_do_limite}_FEICOES_ALEM_DA_DISTANCIA_MAXIMA"
             if feicoes_alem_do_limite else None,
+            "N_CODIGOS=0",
             f"RAIO_M={raio_procura:.3f}",
         )
+    # Codigo fora do padrao nao gera numero de rodovia e fica de fora da lista;
+    # a omissao e registrada para nao desaparecer do resultado.
+    if codigos_sem_prefixo:
+        observacao = observacao_texto(
+            observacao, f"N_CODIGOS_SEM_PREFIXO_VALIDO={codigos_sem_prefixo}")
 
     if criterio not in CRITERIOS_VALIDOS:
         raise RuntimeError(f"Criterio interno invalido: {criterio}")

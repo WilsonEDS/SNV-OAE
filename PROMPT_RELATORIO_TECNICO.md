@@ -56,7 +56,16 @@ Seis critérios, mutuamente exclusivos e exaustivos, avaliados nesta ordem:
 > avaliação, nunca a da tupla.
 
 Campos de saída: `Trecho_SNV`, `km_SNV`, `Dist_SNV_m`, `Raio_SNV`,
-`Qtd_Codigos`, `Criterio`, `Sentido_KM`, `Obs_SNV`.
+`Rodovias_coincidentes`, `Criterio`, `Sentido_KM`, `Obs_SNV`.
+
+> **Atenção.** `Rodovias_coincidentes` lista os números de BR de **todos** os
+> códigos dentro do raio de busca, sem repetição, da rodovia mais próxima da
+> OAE para a mais distante, separados por `;`. O nome evoca o critério
+> `TRECHO_COINCIDENTE`, mas **não** é o mesmo conceito: ali basta a rodovia
+> estar no raio, ao passo que o critério exige sobreposição linear comprovada
+> na posição de menor distância. O relatório deve deixar essa distinção
+> explícita ao descrever o campo, sob pena de induzir o leitor a concluir que
+> toda OAE com duas rodovias listadas está em trecho coincidente.
 
 ## Formato e norma
 
@@ -98,7 +107,7 @@ abreviaturas e siglas; sumário.
 5. **Garantias metodológicas** — determinismo (independência da ordem de leitura
    das feições), exclusividade e exaustividade dos critérios, invariantes
    verificadas em execução, tolerâncias adotadas e sua justificativa numérica.
-6. **Verificação e validação** — o que as 75 verificações automatizadas cobrem,
+6. **Verificação e validação** — o que as 89 verificações automatizadas cobrem,
    o que não cobrem, e o que só a execução em QGIS sobre as camadas reais pode
    confirmar.
 7. **Resultados** — inteiramente reservado (ver "Resultados").
@@ -134,8 +143,11 @@ Não resumir, não reescrever, não reindentar.
 **Apêndice B — Dicionário de dados da camada de saída**: cada campo com tipo,
 domínio de valores e significado. Para `Obs_SNV`, tabela completa dos tokens de
 rastreabilidade (`MIN_VIA_M`, `MARGEM_M`, `CODIGOS_EM_EMPATE`, `DIST_EQUIDISTANTE_M`,
-`SOBREPOSICAO_COM`, `ALERTA_ESCALA_KM_GEOM`, `PROJECAO_NO_EXTREMO`, causas de
-não associação e de sentido indeterminado), com o significado de cada um.
+`SOBREPOSICAO_COM`, `ALERTA_ESCALA_KM_GEOM`, `PROJECAO_NO_EXTREMO`,
+`N_CODIGOS`, `N_CODIGOS_SEM_PREFIXO_VALIDO`, causas de não associação e de
+sentido indeterminado), com o significado de cada um. Registre que `N_CODIGOS`
+traz a quantidade de `vl_codigo` distintos no raio, informação que
+`Rodovias_coincidentes` não expressa por deduplicar as rodovias repetidas.
 
 ## Figuras
 
