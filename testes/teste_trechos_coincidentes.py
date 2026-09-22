@@ -4,9 +4,11 @@ import ast, pathlib
 fonte = (pathlib.Path(__file__).resolve().parent.parent / 'trechos_coincidentes.py').read_text(encoding='utf-8')
 arvore = ast.parse(fonte)
 
-alvos = {"codigo_valido", "prefixo_codigo", "truncar_texto",
-         "separar_codigos", "prefixos_coincidentes"}
-consts = {"SEPARADOR_CODIGOS", "MINIMO_CODIGOS", "TAMANHO_MAX_TRECHOS"}
+alvos = {"codigo_valido", "prefixo_codigo", "truncar_texto", "texto_bruto",
+         "motivo_exclusao", "separar_codigos", "prefixos_coincidentes",
+         "rotulo_grupo"}
+consts = {"SEPARADOR_CODIGOS", "MINIMO_CODIGOS", "TAMANHO_MAX_TRECHOS",
+          "SUPERFICIE_EXCLUIDA", "JURISDICAO_EXIGIDA", "MOTIVOS_EXCLUSAO"}
 
 ns = {"NULL": object()}
 trechos = []
@@ -100,5 +102,63 @@ checa("contagem nao truncada", (qtd, descartados), (200, 0))
 entrada = "010BDF0015;ABC;020BDF0015"
 checa("determinismo",
       g["prefixos_coincidentes"](entrada), g["prefixos_coincidentes"](entrada))
+
+# --- 11) leitura crua do atributo (sem normalizar) ---
+for entrada, esperado in [
+    (None, None), ("PLA", "PLA"), ("", ""), (" x ", " x "),
+    ("federal", "federal"), ("NULL", "NULL"),
+]:
+    checa(f"texto_bruto({entrada!r})", g["texto_bruto"](entrada), esperado)
+# Diferenca deliberada em relacao a codigo_valido, que sanea.
+checa("texto_bruto nao apara", g["texto_bruto"](" PLA ") == g["codigo_valido"](" PLA "),
+      False)
+
+# --- 12) filtro ds_superfi != 'PLA' AND ds_jurisdi = 'Federal' ---
+# passa
+for superficie in ["ASF", "IMP", "LEN", "EOP"]:
+    checa(f"passa ({superficie}, Federal)",
+          g["motivo_exclusao"](superficie, "Federal"), None)
+# superficie planejada
+checa("planejado", g["motivo_exclusao"]("PLA", "Federal"), "SUPERFICIE_PLANEJADA")
+# jurisdicao divergente
+for jurisdicao in ["Estadual", "Municipal", "Coincidente", "federal", "FEDERAL"]:
+    checa(f"jurisdicao {jurisdicao!r}",
+          g["motivo_exclusao"]("ASF", jurisdicao), "JURISDICAO_DIVERGENTE")
+
+# --- 13) semantica SQL: NULL reprova dos dois lados ---
+checa("superficie nula", g["motivo_exclusao"](None, "Federal"), "SUPERFICIE_NULA")
+checa("jurisdicao nula", g["motivo_exclusao"]("ASF", None), "JURISDICAO_NULA")
+# Ordem de avaliacao: a superficie e julgada antes.
+checa("ambas nulas", g["motivo_exclusao"](None, None), "SUPERFICIE_NULA")
+checa("planejado e sem jurisdicao",
+      g["motivo_exclusao"]("PLA", None), "SUPERFICIE_PLANEJADA")
+
+# --- 14) string vazia e valor, nao nulo (como em SQL) ---
+checa("superficie vazia passa", g["motivo_exclusao"]("", "Federal"), None)
+checa("jurisdicao vazia", g["motivo_exclusao"]("ASF", ""), "JURISDICAO_DIVERGENTE")
+
+# --- 15) comparacao exata: espacos nas bordas importam ---
+checa("PLA com espacos nao e PLA", g["motivo_exclusao"](" PLA ", "Federal"), None)
+checa("Federal com espacos",
+      g["motivo_exclusao"]("ASF", " Federal "), "JURISDICAO_DIVERGENTE")
+
+# --- 16) os motivos devolvidos sao os declarados em MOTIVOS_EXCLUSAO ---
+motivos_possiveis = {
+    g["motivo_exclusao"](s_, j_)
+    for s_ in [None, "", "PLA", " PLA ", "ASF"]
+    for j_ in [None, "", "Federal", "federal", "Estadual"]
+}
+checa("motivos declarados", motivos_possiveis - {None} <= set(g["MOTIVOS_EXCLUSAO"]),
+      True)
+# As constantes do filtro sao as do enunciado.
+checa("superficie excluida", g["SUPERFICIE_EXCLUIDA"], "PLA")
+checa("jurisdicao exigida", g["JURISDICAO_EXIGIDA"], "Federal")
+
+# --- 17) rotulo dos grupos do dissolve ---
+checa("rotulo normal", g["rotulo_grupo"]("DF", "010;020"), "DF: 010;020")
+checa("rotulo sem BR", g["rotulo_grupo"]("DF", None), "DF: (sem BR identificada)")
+checa("rotulo sem UF", g["rotulo_grupo"](None, "010;020"), "(sem UF): 010;020")
+checa("rotulo sem nada", g["rotulo_grupo"](None, None),
+      "(sem UF): (sem BR identificada)")
 
 print(f"{ok} verificacoes OK")
