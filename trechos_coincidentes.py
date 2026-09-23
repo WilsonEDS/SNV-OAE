@@ -56,12 +56,15 @@
 #       - TODOS os campos originais da SNV, com os valores originais;
 #       - CAMPO_TRECHOS_COINC ("Trechos-coinc"): prefixos de tres digitos dos
 #         codigos de "ds_coinc", separados por ";", NA ORDEM EM QUE APARECEM no
-#         campo de origem e com as repeticoes preservadas.
+#         campo de origem e com as repeticoes preservadas;
+#       - CAMPO_BRS_EIXO ("BRs_eixo"): as mesmas BRs em forma CANONICA -
+#         distintas, em ordem numerica crescente. E a chave do dissolve.
 #
 #   b) NOME_CAMADA_DISSOLVIDA ("Trechos_Coincidentes_dissolvido") - agregada,
 #      um registro por UF e combinacao de BRs:
 #       - CAMPO_UF_SNV        ("sg_uf")        : UF do grupo;
-#       - CAMPO_TRECHOS_COINC ("Trechos-coinc"): combinacao de BRs do grupo;
+#       - CAMPO_BRS_EIXO      ("BRs_eixo")     : combinacao canonica de BRs
+#         do grupo;
 #       - CAMPO_QTD_TRECHOS   ("Qtd_trechos")  : trechos de detalhe agregados;
 #       - CAMPO_EXT_KM        ("Ext_km")       : extensao do grupo, em km,
 #         medida na geometria JA dissolvida.
@@ -148,6 +151,7 @@ CAMPO_JURISDICAO = "ds_jurisdi"
 CAMPO_UF_SNV = "sg_uf"
 
 CAMPO_TRECHOS_COINC = "Trechos-coinc"
+CAMPO_BRS_EIXO = "BRs_eixo"
 CAMPO_QTD_TRECHOS = "Qtd_trechos"
 CAMPO_EXT_KM = "Ext_km"
 
@@ -391,6 +395,45 @@ def prefixos_coincidentes(valor):
     return texto, len(codigos), descartados
 
 
+def brs_do_eixo(texto_trechos):
+    """Reduz o texto de BRs de um trecho a chave canonica do eixo.
+
+    Parametros:
+        texto_trechos: conteudo de CAMPO_TRECHOS_COINC, ou None.
+
+    Retorna:
+        str com as BRs distintas em ordem numerica crescente, unidas por ";",
+        ou None quando nao houver BR alguma no texto.
+
+    Hipoteses metodologicas:
+        CAMPO_TRECHOS_COINC nao serve como chave de agrupamento porque seu texto
+        depende de qual trecho o gerou: o mesmo eixo compartilhado pela BR-174 e
+        pela BR-210 aparece como "210;174" no trecho de uma e "174;210" no da
+        outra, e o dissolve acaba gravando duas feicoes para um eixo so. A ordem
+        canonica elimina a duplicacao sem alterar o campo de origem, que segue
+        util trecho a trecho.
+
+        A chave e derivada DO TEXTO, e nao recalculada em paralelo a partir dos
+        prefixos, para que BRs_eixo nomeie por construcao exatamente o mesmo
+        conjunto de BRs que CAMPO_TRECHOS_COINC. Duas derivacoes independentes
+        poderiam divergir sem que nada acusasse.
+
+        So sao aceitos tokens de exatamente tres digitos. Isso descarta o
+        marcador de truncamento, que de outro modo entraria na chave de um
+        trecho com BRs demais para o campo e criaria um grupo espurio.
+    """
+    if texto_trechos is None:
+        return None
+    rodovias = set()
+    for parte in str(texto_trechos).split(SEPARADOR_CODIGOS):
+        token = codigo_valido(parte)
+        if token is not None and len(token) == 3 and token.isdigit():
+            rodovias.add(token)
+    if not rodovias:
+        return None
+    return truncar_texto(SEPARADOR_CODIGOS.join(sorted(rodovias)), TAMANHO_MAX_TRECHOS)
+
+
 def rotulo_grupo(uf, trechos):
     """Descreve um grupo do dissolve para as mensagens de resumo.
 
@@ -440,11 +483,13 @@ obrigatorios_snv = {
 faltantes_snv = sorted(obrigatorios_snv - campos_snv)
 if faltantes_snv:
     raise Exception(f"Campos ausentes em {NOME_CAMADA_SNV}: {', '.join(faltantes_snv)}")
-# Dois campos homonimos na saida seriam indistinguiveis na tabela de atributos e
-# o valor calculado poderia ser lido como se fosse dado de origem.
-if CAMPO_TRECHOS_COINC in campos_snv:
+# Campos homonimos na saida seriam indistinguiveis na tabela de atributos e o
+# valor calculado poderia ser lido como se fosse dado de origem.
+campos_novos = {CAMPO_TRECHOS_COINC, CAMPO_BRS_EIXO}
+conflitantes = sorted(campos_novos & campos_snv)
+if conflitantes:
     raise Exception(
-        f'A camada "{NOME_CAMADA_SNV}" ja possui o campo "{CAMPO_TRECHOS_COINC}".'
+        f'A camada "{NOME_CAMADA_SNV}" ja possui os campos: {", ".join(conflitantes)}.'
     )
 
 
@@ -464,12 +509,16 @@ if not saida.isValid():
 provedor_saida = saida.dataProvider()
 provedor_saida.addAttributes(camada_snv.fields())
 provedor_saida.addAttributes(
-    [QgsField(CAMPO_TRECHOS_COINC, QVariant.String, len=TAMANHO_MAX_TRECHOS)]
+    [
+        QgsField(CAMPO_TRECHOS_COINC, QVariant.String, len=TAMANHO_MAX_TRECHOS),
+        QgsField(CAMPO_BRS_EIXO, QVariant.String, len=TAMANHO_MAX_TRECHOS),
+    ]
 )
 saida.updateFields()
 
 idx_trechos_coinc = saida.fields().indexOf(CAMPO_TRECHOS_COINC)
-if idx_trechos_coinc < 0:
+idx_brs_eixo = saida.fields().indexOf(CAMPO_BRS_EIXO)
+if idx_trechos_coinc < 0 or idx_brs_eixo < 0:
     raise RuntimeError("Estrutura da camada de saida divergente da esperada.")
 
 
@@ -519,11 +568,15 @@ for trecho in camada_snv.getFeatures():
 
     nova = QgsFeature(saida.fields())
     nova.setGeometry(QgsGeometry(trecho.geometry()))
-    nova.setAttributes(trecho.attributes() + [None])
+    brs_eixo = brs_do_eixo(texto_prefixos)
+    nova.setAttributes(trecho.attributes() + [None] * len(campos_novos))
     nova.setAttribute(idx_trechos_coinc, texto_prefixos)
+    nova.setAttribute(idx_brs_eixo, brs_eixo)
     novas_feicoes.append(nova)
 
-    grupos[(texto_bruto(trecho[CAMPO_UF_SNV]), texto_prefixos)] += 1
+    # A chave do grupo e BRs_eixo, e nao Trechos-coinc: este ultimo depende de
+    # qual trecho o gerou e faria o mesmo eixo virar dois grupos.
+    grupos[(texto_bruto(trecho[CAMPO_UF_SNV]), brs_eixo)] += 1
 
 # addFeatures devolve (bool, lista); testar a tupla inteira daria sempre
 # verdadeiro e engoliria a falha de gravacao.
@@ -547,7 +600,7 @@ dissolvido_bruto = processing.run(
     "native:dissolve",
     {
         "INPUT": saida,
-        "FIELD": [CAMPO_UF_SNV, CAMPO_TRECHOS_COINC],
+        "FIELD": [CAMPO_UF_SNV, CAMPO_BRS_EIXO],
         "OUTPUT": "memory:",
     },
 )["OUTPUT"]
@@ -584,7 +637,7 @@ provedor_dissolvido = dissolvido.dataProvider()
 provedor_dissolvido.addAttributes(
     [
         QgsField(CAMPO_UF_SNV, QVariant.String, len=10),
-        QgsField(CAMPO_TRECHOS_COINC, QVariant.String, len=TAMANHO_MAX_TRECHOS),
+        QgsField(CAMPO_BRS_EIXO, QVariant.String, len=TAMANHO_MAX_TRECHOS),
         QgsField(CAMPO_QTD_TRECHOS, QVariant.Int),
         QgsField(CAMPO_EXT_KM, QVariant.Double, len=20, prec=3),
     ]
@@ -596,7 +649,7 @@ extensao_total_km = 0.0
 resumo_grupos = []
 
 for grupo in dissolvido_bruto.getFeatures():
-    chave = (texto_bruto(grupo[CAMPO_UF_SNV]), texto_bruto(grupo[CAMPO_TRECHOS_COINC]))
+    chave = (texto_bruto(grupo[CAMPO_UF_SNV]), texto_bruto(grupo[CAMPO_BRS_EIXO]))
     if chave not in grupos:
         raise RuntimeError(f"Grupo dissolvido sem correspondencia no detalhe: {chave}.")
 

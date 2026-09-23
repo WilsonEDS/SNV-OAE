@@ -48,6 +48,10 @@
 #       - TODOS os campos originais da SNV;
 #       - CAMPO_TRECHOS_COINC ("Trechos-coinc") : BRs que dividem o eixo, a
 #         propria primeiro e as parceiras em ordem numerica;
+#       - CAMPO_BRS_EIXO      ("BRs_eixo")      : as mesmas BRs em forma
+#         CANONICA - distintas, em ordem numerica crescente. E a chave do
+#         dissolve: Trechos-coinc depende de qual trecho o gerou e faria o
+#         mesmo eixo virar dois grupos, um por BR;
 #       - CAMPO_QTD_PARCEIROS ("Qtd_parceiros") : trechos distintos sobrepostos;
 #       - CAMPO_COD_PARCEIROS ("Cod_parceiros") : quais trechos, e com quantos
 #         metros de eixo comum cada um, em ordem decrescente de sobreposicao;
@@ -61,7 +65,7 @@
 #         INDETERMINADO.
 #
 #   b) NOME_CAMADA_DISSOLVIDA ("Trechos_Coincidentes_M2_dissolvido") - agregada,
-#      um registro por UF e combinacao de BRs, com sg_uf, Trechos-coinc,
+#      um registro por UF e combinacao de BRs, com sg_uf, BRs_eixo,
 #      CAMPO_QTD_TRECHOS ("Qtd_trechos") e CAMPO_EXT_KM ("Ext_km").
 #
 #   c) NOME_CAMADA_SOBREPOSICOES ("Trechos_Coincidentes_M2_sobreposicoes") - a
@@ -179,6 +183,7 @@ CAMPO_JURISDICAO = "ds_jurisdi"
 CAMPO_UF_SNV = "sg_uf"
 
 CAMPO_TRECHOS_COINC = "Trechos-coinc"
+CAMPO_BRS_EIXO = "BRs_eixo"
 CAMPO_QTD_PARCEIROS = "Qtd_parceiros"
 CAMPO_COD_PARCEIROS = "Cod_parceiros"
 CAMPO_EXT_SOBREP_KM = "Ext_sobrep_km"
@@ -453,7 +458,7 @@ def tipo_coincidencia(prefixo_proprio, prefixos_parceiros):
         Dois codigos DISTINTOS da MESMA BR sobrepostos sao geometria duplicada
         no SNV, e nao coincidencia entre rodovias. Distinguir os casos impede
         que a duplicacao seja contabilizada como eixo compartilhado, sem
-        escondê-la: a anomalia continua na saida, nomeada.
+        esconde-la: a anomalia continua na saida, nomeada.
 
         Sem a BR propria a comparacao nao pode ser feita, e o caso e nomeado em
         vez de ser silenciosamente classificado como ENTRE_BRS - o que
@@ -613,6 +618,45 @@ def faixa_sobreposicao(ext_m):
     return f">= {FAIXAS_SOBREPOSICAO[-1]:g} m"
 
 
+def brs_do_eixo(texto_trechos):
+    """Reduz o texto de BRs de um trecho a chave canonica do eixo.
+
+    Parametros:
+        texto_trechos: conteudo de CAMPO_TRECHOS_COINC, ou None.
+
+    Retorna:
+        str com as BRs distintas em ordem numerica crescente, unidas por ";",
+        ou None quando nao houver BR alguma no texto.
+
+    Hipoteses metodologicas:
+        CAMPO_TRECHOS_COINC nao serve como chave de agrupamento porque seu texto
+        depende de qual trecho o gerou: o mesmo eixo compartilhado pela BR-174 e
+        pela BR-210 aparece como "210;174" no trecho de uma e "174;210" no da
+        outra, e o dissolve acaba gravando duas feicoes para um eixo so. A ordem
+        canonica elimina a duplicacao sem alterar o campo de origem, que segue
+        util trecho a trecho.
+
+        A chave e derivada DO TEXTO, e nao recalculada em paralelo a partir dos
+        prefixos, para que BRs_eixo nomeie por construcao exatamente o mesmo
+        conjunto de BRs que CAMPO_TRECHOS_COINC. Duas derivacoes independentes
+        poderiam divergir sem que nada acusasse.
+
+        So sao aceitos tokens de exatamente tres digitos. Isso descarta o
+        marcador de truncamento, que de outro modo entraria na chave de um
+        trecho com BRs demais para o campo e criaria um grupo espurio.
+    """
+    if texto_trechos is None:
+        return None
+    rodovias = set()
+    for parte in str(texto_trechos).split(SEPARADOR_CODIGOS):
+        token = codigo_valido(parte)
+        if token is not None and len(token) == 3 and token.isdigit():
+            rodovias.add(token)
+    if not rodovias:
+        return None
+    return truncar_texto(SEPARADOR_CODIGOS.join(sorted(rodovias)), TAMANHO_MAX_TRECHOS)
+
+
 def rotulo_grupo(uf, trechos):
     """Descreve um grupo do dissolve para as mensagens de resumo.
 
@@ -692,6 +736,7 @@ if faltantes_snv:
 # valor calculado poderia ser lido como se fosse dado de origem.
 campos_novos = {
     CAMPO_TRECHOS_COINC,
+    CAMPO_BRS_EIXO,
     CAMPO_QTD_PARCEIROS,
     CAMPO_COD_PARCEIROS,
     CAMPO_EXT_SOBREP_KM,
@@ -873,6 +918,7 @@ provedor_saida.addAttributes(camada_snv.fields())
 provedor_saida.addAttributes(
     [
         QgsField(CAMPO_TRECHOS_COINC, QVariant.String, len=TAMANHO_MAX_TRECHOS),
+        QgsField(CAMPO_BRS_EIXO, QVariant.String, len=TAMANHO_MAX_TRECHOS),
         QgsField(CAMPO_QTD_PARCEIROS, QVariant.Int),
         QgsField(CAMPO_COD_PARCEIROS, QVariant.String, len=TAMANHO_MAX_TRECHOS),
         QgsField(CAMPO_EXT_SOBREP_KM, QVariant.Double, len=20, prec=3),
@@ -907,6 +953,7 @@ for fid in ordenados:
     }
 
     texto = texto_rodovias(prefixo_proprio, prefixos_parceiros)
+    brs_eixo = brs_do_eixo(texto)
     tipo_coinc = tipo_coincidencia(prefixo_proprio, prefixos_parceiros)
     if texto is None:
         contagem["SEM_BR_PARCEIRA"] += 1
@@ -931,6 +978,7 @@ for fid in ordenados:
     nova.setGeometry(QgsGeometry(trecho.geometry()))
     nova.setAttributes(trecho.attributes() + [None] * len(campos_novos))
     nova.setAttribute(indices_novos[CAMPO_TRECHOS_COINC], texto)
+    nova.setAttribute(indices_novos[CAMPO_BRS_EIXO], brs_eixo)
     nova.setAttribute(indices_novos[CAMPO_QTD_PARCEIROS], len(parceiros[fid]))
     nova.setAttribute(indices_novos[CAMPO_COD_PARCEIROS], cod_parceiros)
     nova.setAttribute(indices_novos[CAMPO_EXT_SOBREP_KM], em_km(ext_sobrep_m))
@@ -939,7 +987,9 @@ for fid in ordenados:
     nova.setAttribute(indices_novos[CAMPO_TIPO_COINC], tipo_coinc)
     novas_feicoes.append(nova)
 
-    grupos[(texto_bruto(trecho[CAMPO_UF_SNV]), texto)] += 1
+    # A chave do grupo e BRs_eixo, e nao Trechos-coinc: este ultimo traz a BR
+    # propria na frente e faria o mesmo eixo virar dois grupos, um por BR.
+    grupos[(texto_bruto(trecho[CAMPO_UF_SNV]), brs_eixo)] += 1
 
 # addFeatures devolve (bool, lista); testar a tupla inteira daria sempre
 # verdadeiro e engoliria a falha de gravacao.
@@ -1015,7 +1065,7 @@ dissolvido_bruto = processing.run(
     "native:dissolve",
     {
         "INPUT": saida,
-        "FIELD": [CAMPO_UF_SNV, CAMPO_TRECHOS_COINC],
+        "FIELD": [CAMPO_UF_SNV, CAMPO_BRS_EIXO],
         "OUTPUT": "memory:",
     },
 )["OUTPUT"]
@@ -1036,7 +1086,7 @@ provedor_dissolvido = dissolvido.dataProvider()
 provedor_dissolvido.addAttributes(
     [
         QgsField(CAMPO_UF_SNV, QVariant.String, len=10),
-        QgsField(CAMPO_TRECHOS_COINC, QVariant.String, len=TAMANHO_MAX_TRECHOS),
+        QgsField(CAMPO_BRS_EIXO, QVariant.String, len=TAMANHO_MAX_TRECHOS),
         QgsField(CAMPO_QTD_TRECHOS, QVariant.Int),
         QgsField(CAMPO_EXT_KM, QVariant.Double, len=20, prec=3),
     ]
@@ -1048,7 +1098,7 @@ extensao_total_km = 0.0
 resumo_grupos = []
 
 for grupo in dissolvido_bruto.getFeatures():
-    chave = (texto_bruto(grupo[CAMPO_UF_SNV]), texto_bruto(grupo[CAMPO_TRECHOS_COINC]))
+    chave = (texto_bruto(grupo[CAMPO_UF_SNV]), texto_bruto(grupo[CAMPO_BRS_EIXO]))
     if chave not in grupos:
         raise RuntimeError(f"Grupo dissolvido sem correspondencia no detalhe: {chave}.")
 

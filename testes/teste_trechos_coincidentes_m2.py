@@ -8,7 +8,8 @@ arvore = ast.parse(fonte)
 alvos = {"codigo_valido", "prefixo_codigo", "truncar_texto", "texto_bruto",
          "motivo_exclusao", "texto_rodovias", "tipo_coincidencia",
          "classificar_sobreposicao", "rotulo_grupo", "em_km",
-         "sobreposicao_relevante", "texto_parceiros", "faixa_sobreposicao"}
+         "sobreposicao_relevante", "texto_parceiros", "faixa_sobreposicao",
+         "brs_do_eixo"}
 consts = {"SEPARADOR_CODIGOS", "TAMANHO_MAX_TRECHOS", "SUPERFICIE_EXCLUIDA",
           "JURISDICAO_EXIGIDA", "MOTIVOS_EXCLUSAO", "LIMIAR_SOBREPOSICAO_TOTAL",
           "TIPOS_COINC", "TIPOS_SOBREP", "TOLERANCIA_SOBREPOSICAO_M",
@@ -197,6 +198,40 @@ for entrada in [None, float("nan"), float("inf")]:
 # Os limites declarados sao os usados nos rotulos.
 checa("faixas declaradas", g["FAIXAS_SOBREPOSICAO"], (1.0, 10.0, 100.0, 1000.0))
 
+# --- chave canonica do eixo (BRs_eixo) ---
+# O caso da tela: o mesmo eixo visto da BR-210 e da BR-174 gerava dois grupos no
+# dissolve, porque Trechos-coinc depende de qual trecho o gerou. A chave
+# canonica faz os dois cairem no mesmo grupo.
+checa("eixo visto da 210", g["brs_do_eixo"]("210;174"), "174;210")
+checa("eixo visto da 174", g["brs_do_eixo"]("174;210"), "174;210")
+checa("mesma chave dos dois lados",
+      g["brs_do_eixo"]("210;174"), g["brs_do_eixo"]("174;210"))
+checa("eixo do AC", g["brs_do_eixo"]("364;307"), g["brs_do_eixo"]("307;364"))
+
+# ordem numerica crescente, sem repeticao
+checa("ordem crescente", g["brs_do_eixo"]("020;010;030"), "010;020;030")
+checa("duplicata removida", g["brs_do_eixo"]("010;010"), "010")
+checa("duplicata no meio", g["brs_do_eixo"]("010;020;010"), "010;020")
+checa("ja canonico", g["brs_do_eixo"]("010;020;030"), "010;020;030")
+
+# nulos e textos sem BR alguma
+for entrada in [None, "", ";;", "   ", "NULL"]:
+    checa(f"brs_do_eixo({entrada!r})", g["brs_do_eixo"](entrada), None)
+
+# so tokens de exatamente tres digitos entram na chave
+checa("token invalido descartado", g["brs_do_eixo"]("010;ABC"), "010")
+checa("so invalidos", g["brs_do_eixo"]("ABC;XYZ"), None)
+checa("token curto", g["brs_do_eixo"]("010;12"), "010")
+checa("token longo", g["brs_do_eixo"]("010;0100"), "010")
+# O marcador de truncamento nao pode virar uma "BR" e criar um grupo espurio.
+checa("marcador de truncamento",
+      g["brs_do_eixo"]("010;020;...[TRUNCADO]"), "010;020")
+
+# idempotencia: aplicar a chave sobre ela mesma nao muda nada
+for entrada in ["210;174", "010;010", "020;010;030", "010;ABC"]:
+    checa(f"idempotente({entrada!r})",
+          g["brs_do_eixo"](g["brs_do_eixo"](entrada)), g["brs_do_eixo"](entrada))
+
 # --- 14) as copias do m1 nao divergiram do original ---
 # O script m2 declara copiar verbatim as funcoes puras do m1. Uma divergencia
 # silenciosa entre as duas copias faria as metodologias filtrarem universos
@@ -214,7 +249,7 @@ def corpo_sem_docstring(no):
     return ast.dump(ast.Module(body=corpo, type_ignores=[]))
 
 copiadas = {"codigo_valido", "prefixo_codigo", "truncar_texto", "texto_bruto",
-            "motivo_exclusao", "rotulo_grupo"}
+            "motivo_exclusao", "brs_do_eixo", "rotulo_grupo"}
 m1 = {no.name: no for no in arvore_m1.body
       if isinstance(no, ast.FunctionDef) and no.name in copiadas}
 m2 = {no.name: no for no in arvore.body
