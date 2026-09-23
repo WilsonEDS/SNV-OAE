@@ -36,19 +36,21 @@
 #       - CAMPO_UF_SNV      ("sg_uf")      : UF, usada como chave do dissolve.
 #
 #   A camada precisa estar carregada no projeto aberto do QGIS. O script e para
-#   ser executado no Console Python do QGIS: a secao 6 usa o framework
+#   ser executado no Console Python do QGIS: a secao 7 usa o framework
 #   Processing.
 #
 #
 # 3. DADOS DE SAIDA
 # -----------------------------------------------------------------------------
-#   Duas camadas em memoria, ambas no tipo de geometria e no SRC da SNV:
+#   Tres camadas em memoria, no SRC da SNV:
 #
 #   a) NOME_CAMADA_SAIDA ("Trechos_Coincidentes_M2") - detalhe, trecho a trecho:
 #       - TODOS os campos originais da SNV;
 #       - CAMPO_TRECHOS_COINC ("Trechos-coinc") : BRs que dividem o eixo, a
 #         propria primeiro e as parceiras em ordem numerica;
 #       - CAMPO_QTD_PARCEIROS ("Qtd_parceiros") : trechos distintos sobrepostos;
+#       - CAMPO_COD_PARCEIROS ("Cod_parceiros") : quais trechos, e com quantos
+#         metros de eixo comum cada um, em ordem decrescente de sobreposicao;
 #       - CAMPO_EXT_SOBREP_KM ("Ext_sobrep_km") : extensao do proprio trecho
 #         efetivamente coberta por algum parceiro;
 #       - CAMPO_PERC_SOBREP   ("Perc_sobrep")   : essa extensao dividida pela
@@ -61,6 +63,12 @@
 #   b) NOME_CAMADA_DISSOLVIDA ("Trechos_Coincidentes_M2_dissolvido") - agregada,
 #      um registro por UF e combinacao de BRs, com sg_uf, Trechos-coinc,
 #      CAMPO_QTD_TRECHOS ("Qtd_trechos") e CAMPO_EXT_KM ("Ext_km").
+#
+#   c) NOME_CAMADA_SOBREPOSICOES ("Trechos_Coincidentes_M2_sobreposicoes") - a
+#      geometria da porcao de eixo efetivamente compartilhada por cada par, com
+#      CAMPO_CODIGO_A / CAMPO_CODIGO_B e CAMPO_EXT_SOBREP_M ("Ext_sobrep_m").
+#      E a camada de prova: ligada sobre a SNV, mostra se cada deteccao e um
+#      eixo comum ou apenas um ponto de juncao.
 #
 #   A camada de origem nao e modificada. A estrutura espelha a da metodologia 1
 #   para que as duas possam ser cruzadas diretamente por vl_codigo.
@@ -77,17 +85,33 @@
 #
 #   4.2 Prova da sobreposicao
 #       Interseccao EXATA entre as duas geometrias, da qual somente as porcoes
-#       LINEARES de comprimento positivo contam. Um cruzamento (viaduto,
-#       entroncamento) produz um ponto, nao um trecho comum, e nao prova
-#       coincidencia alguma.
+#       LINEARES contam. Um cruzamento (viaduto, entroncamento) produz um ponto,
+#       nao um trecho comum, e nao prova coincidencia alguma.
 #
-#       Nao se aplica buffer, snap ou deslocamento de vertice, pela mesma
-#       hipotese ja registrada em associacao_oae_snv.py: a coincidencia precisa
-#       existir no dado, nao ser fabricada por tolerancia. Em compensacao, fica
-#       a limitacao correspondente - dois eixos fisicamente coincidentes
-#       digitalizados com centimetros de diferenca NAO sao detectados aqui. E
-#       exatamente uma das divergencias que o confronto com a metodologia 1
-#       serve para revelar.
+#       A porcao comum e medida em METROS, sobre o elipsoide, e so vale como
+#       prova a partir de TOLERANCIA_SOBREPOSICAO_M. Os dois pontos importam:
+#
+#       a) A unidade. Medir com QgsGeometry.length() devolve o comprimento
+#          PLANAR nas unidades do SRC - graus, no SRC geografico em que o SNV e
+#          publicado. Um teste de "comprimento > 0" em graus aceita o residuo de
+#          1e-13 grau que o GEOS deixa ao nodear duas linhas que apenas se tocam
+#          ou se cruzam: em vez de um POINT limpo, a interseccao sai como
+#          LINESTRING degenerado. Era isso que fazia cada juncao entre trechos
+#          vizinhos e cada entroncamento da malha virar falso positivo.
+#
+#       b) O limiar. Mesmo em metros, o dado traz lascas de poucos centimetros
+#          nas juncoes, vindas da digitalizacao. Um comprimento minimo NAO e o
+#          buffer que a metodologia recusa: buffer FABRICA coincidencia entre
+#          linhas que nao se tocam; o comprimento minimo apenas DESCARTA
+#          evidencia fraca demais para se distinguir de ruido numerico. Continua
+#          valendo a recusa a buffer, snap e deslocamento de vertice.
+#
+#       Fica a limitacao correspondente: dois eixos fisicamente coincidentes
+#       digitalizados com centimetros de diferenca NAO sao detectados aqui, e
+#       tampouco um multiplex genuino mais curto que a tolerancia. E exatamente
+#       uma das divergencias que o confronto com a metodologia 1 serve para
+#       revelar. O histograma impresso no resumo mostra a distribuicao das
+#       sobreposicoes encontradas e permite reavaliar o limiar com evidencia.
 #
 #   4.3 Extensao coberta
 #       Medida sobre a UNIAO das porcoes comuns, nunca pela soma delas: dois
@@ -131,7 +155,7 @@ from qgis.core import (
     NULL,
 )
 
-# Importado aqui, e nao na secao 6 que o usa, para que a ausencia do framework
+# Importado aqui, e nao na secao 7 que o usa, para que a ausencia do framework
 # interrompa a execucao antes da varredura da malha, e nao depois dela.
 try:
     import processing
@@ -147,6 +171,7 @@ except ImportError as erro:
 NOME_CAMADA_SNV = "SNV_202607A"
 NOME_CAMADA_SAIDA = "Trechos_Coincidentes_M2"
 NOME_CAMADA_DISSOLVIDA = "Trechos_Coincidentes_M2_dissolvido"
+NOME_CAMADA_SOBREPOSICOES = "Trechos_Coincidentes_M2_sobreposicoes"
 
 CAMPO_VL_CODIGO = "vl_codigo"
 CAMPO_SUPERFICIE = "ds_superfi"
@@ -155,6 +180,7 @@ CAMPO_UF_SNV = "sg_uf"
 
 CAMPO_TRECHOS_COINC = "Trechos-coinc"
 CAMPO_QTD_PARCEIROS = "Qtd_parceiros"
+CAMPO_COD_PARCEIROS = "Cod_parceiros"
 CAMPO_EXT_SOBREP_KM = "Ext_sobrep_km"
 CAMPO_PERC_SOBREP = "Perc_sobrep"
 CAMPO_TIPO_SOBREP = "Tipo_sobrep"
@@ -162,6 +188,10 @@ CAMPO_TIPO_COINC = "Tipo_coinc"
 
 CAMPO_QTD_TRECHOS = "Qtd_trechos"
 CAMPO_EXT_KM = "Ext_km"
+
+CAMPO_CODIGO_A = "Codigo_a"
+CAMPO_CODIGO_B = "Codigo_b"
+CAMPO_EXT_SOBREP_M = "Ext_sobrep_m"
 
 # Filtro equivalente a ds_superfi != 'PLA' AND ds_jurisdi = 'Federal'.
 SUPERFICIE_EXCLUIDA = "PLA"
@@ -172,6 +202,17 @@ SEPARADOR_CODIGOS = ";"
 
 # Fracao da extensao do trecho a partir da qual a sobreposicao e TOTAL.
 LIMIAR_SOBREPOSICAO_TOTAL = 0.999
+
+# Comprimento minimo, em METROS, da porcao comum que prova coincidencia. Ver a
+# secao 4.2 do cabecalho: abaixo disso a evidencia nao se distingue do residuo
+# numerico das juncoes e dos entroncamentos.
+TOLERANCIA_SOBREPOSICAO_M = 10.0
+
+# Limites, em metros, das faixas do histograma de diagnostico.
+FAIXAS_SOBREPOSICAO = (1.0, 10.0, 100.0, 1000.0)
+
+# Como um parceiro sem vl_codigo identificavel e nomeado na saida.
+ROTULO_SEM_CODIGO = "(sem codigo)"
 
 # Mesmo limite conservador adotado em associacao_oae_snv.py: 254 caracteres
 # mantem a saida exportavel para Shapefile/DBF sem perda silenciosa.
@@ -465,6 +506,113 @@ def classificar_sobreposicao(ext_sobrep, ext_trecho):
     return percentual, tipo
 
 
+def em_km(metros):
+    """Converte uma medida de metros para quilometros preservando a ausencia.
+
+    Parametros:
+        metros: float em metros, ou None.
+
+    Retorna:
+        float em km, ou None quando nao havia medida.
+
+    Hipotese metodologica:
+        A conversao existe como funcao para que so exista UMA primitiva de
+        medida no script, em metros. Ter duas medidas em unidades diferentes
+        circulando pelo codigo foi a origem do erro corrigido na secao 4.2 do
+        cabecalho.
+    """
+    return None if metros is None else metros / 1000.0
+
+
+def sobreposicao_relevante(ext_m):
+    """Decide se uma porcao comum e longa o bastante para provar coincidencia.
+
+    Parametros:
+        ext_m: extensao da porcao comum, em METROS, ou None.
+
+    Retorna:
+        True somente quando ext_m e finito e alcanca
+        TOLERANCIA_SOBREPOSICAO_M.
+
+    Hipoteses metodologicas:
+        O criterio e uma funcao nomeada, e nao um teste solto no meio do laco de
+        varredura, porque ele E a metodologia: a versao anterior escondia ali um
+        "comprimento > 0" medido em graus, que aceitava o residuo numerico de
+        cada juncao da malha como prova de eixo compartilhado.
+
+        O limiar e inclusivo. Nao se trata de tolerancia que fabrica
+        coincidencia - isso seria buffer, e continua recusado - mas de descartar
+        evidencia fraca demais para se distinguir de ruido.
+    """
+    if ext_m is None or not math.isfinite(ext_m):
+        return False
+    return ext_m >= TOLERANCIA_SOBREPOSICAO_M
+
+
+def texto_parceiros(pares):
+    """Lista os trechos sobrepostos com a extensao comum de cada um.
+
+    Parametros:
+        pares: iteravel de (vl_codigo do parceiro, extensao comum em metros).
+
+    Retorna:
+        str no formato "222BCE0240(12043.7m);135BMA0170(14.1m)", ou None quando
+        nao houver parceiro algum.
+
+    Hipoteses metodologicas:
+        A ordem e DECRESCENTE por extensao: havendo truncamento, o que sobrevive
+        no campo e a evidencia mais forte. O empate e resolvido pelo codigo, de
+        modo que o texto seja reproduzivel entre execucoes.
+
+        Sem este campo a camada afirmava "coincidente" sem dizer com quem, e
+        conferir um caso exigia inspecao visual no QGIS - foi o que permitiu que
+        um erro de unidade passasse despercebido na primeira rodada. Um parceiro
+        sem medida valida e nomeado como tal em vez de receber zero, que o
+        colocaria junto dos casos legitimamente curtos.
+    """
+    itens = []
+    for codigo, ext_m in pares:
+        rotulo = codigo_valido(codigo) or ROTULO_SEM_CODIGO
+        medida = ext_m if ext_m is not None and math.isfinite(ext_m) else None
+        itens.append((medida, rotulo))
+    if not itens:
+        return None
+
+    # Os sem medida vao para o fim; os demais em extensao decrescente.
+    ordenados = sorted(itens, key=lambda item: (item[0] is None, -(item[0] or 0.0), item[1]))
+    textos = [
+        f"{rotulo}({medida:.1f}m)" if medida is not None else f"{rotulo}(nao medida)"
+        for medida, rotulo in ordenados
+    ]
+    return truncar_texto(SEPARADOR_CODIGOS.join(textos), TAMANHO_MAX_TRECHOS)
+
+
+def faixa_sobreposicao(ext_m):
+    """Classifica uma extensao de sobreposicao numa faixa do histograma.
+
+    Parametros:
+        ext_m: extensao da porcao comum, em metros, ou None.
+
+    Retorna:
+        str com o rotulo da faixa (ex.: "< 1 m", "1-10 m", ">= 1000 m"), ou
+        "nao medida".
+
+    Hipotese metodologica:
+        Os rotulos sao derivados de FAIXAS_SOBREPOSICAO, e nao escritos a mao,
+        para que mudar os limites nao deixe o histograma mentindo sobre o que
+        esta contando. O histograma existe para que o limiar da tolerancia possa
+        ser reavaliado com a distribuicao real do dado em vez de por palpite.
+    """
+    if ext_m is None or not math.isfinite(ext_m):
+        return "nao medida"
+    if ext_m < FAIXAS_SOBREPOSICAO[0]:
+        return f"< {FAIXAS_SOBREPOSICAO[0]:g} m"
+    for inferior, superior in zip(FAIXAS_SOBREPOSICAO, FAIXAS_SOBREPOSICAO[1:]):
+        if ext_m < superior:
+            return f"{inferior:g}-{superior:g} m"
+    return f">= {FAIXAS_SOBREPOSICAO[-1]:g} m"
+
+
 def rotulo_grupo(uf, trechos):
     """Descreve um grupo do dissolve para as mensagens de resumo.
 
@@ -545,6 +693,7 @@ if faltantes_snv:
 campos_novos = {
     CAMPO_TRECHOS_COINC,
     CAMPO_QTD_PARCEIROS,
+    CAMPO_COD_PARCEIROS,
     CAMPO_EXT_SOBREP_KM,
     CAMPO_PERC_SOBREP,
     CAMPO_TIPO_SOBREP,
@@ -573,16 +722,21 @@ if not medidor.willUseEllipsoid():
     )
 
 
-def comprimento_km(geometria):
-    """Mede uma geometria linear em quilometros sobre o elipsoide.
+def comprimento_m(geometria):
+    """Mede uma geometria linear em METROS sobre o elipsoide.
 
     Parametros:
         geometria: QgsGeometry linear.
 
     Retorna:
-        float em km, ou None quando a medicao nao resulta num numero finito.
+        float em metros, ou None quando a medicao nao resulta num numero finito.
 
-    Hipotese metodologica:
+    Hipoteses metodologicas:
+        E a UNICA primitiva de medida do script, e devolve metros. Onde se quer
+        quilometros, converte-se com em_km no ponto de uso. Ter duas primitivas
+        em unidades diferentes foi o que permitiu que o criterio de deteccao
+        acabasse comparando graus com zero (ver secao 4.2 do cabecalho).
+
         Uma medicao nao finita e devolvida como ausencia em vez de zero: zero
         seria indistinguivel de um trecho realmente sem extensao e entraria nos
         somatorios como se fosse medida valida.
@@ -590,7 +744,7 @@ def comprimento_km(geometria):
     if geometria is None or geometria.isNull() or geometria.isEmpty():
         return None
     medida = medidor.convertLengthMeasurement(
-        medidor.measureLength(geometria), QgsUnitTypes.DistanceKilometers
+        medidor.measureLength(geometria), QgsUnitTypes.DistanceMeters
     )
     return medida if math.isfinite(medida) else None
 
@@ -641,9 +795,16 @@ print(f'Trechos analisados apos o filtro: {contagem["ANALISADOS"]}')
 # Cada par e avaliado UMA vez (apenas contra candidatos de id maior) e o
 # resultado e lancado nas duas feicoes. Alem de dividir o custo pela metade,
 # isso torna o resultado independente da ordem de leitura.
+#
+# parceiros[fid] = {fid_parceiro: extensao comum em metros}: a extensao vem da
+# MESMA medicao que aceitou o par, e nao de um recalculo posterior.
 parceiros = {}
 sobreposicoes = {}
-pares_sobrepostos = 0
+pares_aceitos = []
+# O histograma conta TODOS os pares com porcao linear, aceitos ou nao: e o que
+# permite confirmar que o limiar cortou ruido e nao coincidencia legitima.
+histograma = Counter()
+pares_descartados = 0
 
 ordenados = sorted(feicoes)
 for posicao, fid_a in enumerate(ordenados, start=1):
@@ -664,22 +825,33 @@ for posicao, fid_a in enumerate(ordenados, start=1):
         if comum.isNull() or comum.isEmpty():
             continue
 
-        # Somente porcao LINEAR de comprimento positivo prova coincidencia. Um
-        # cruzamento produz um ponto, nao um trecho comum.
-        comuns = []
-        for parte in partes_lineares(comum):
-            comprimento = parte.length()
-            if math.isfinite(comprimento) and comprimento > 0:
-                comuns.append(parte)
-        if not comuns:
+        # Somente porcao LINEAR prova coincidencia: um cruzamento produz um
+        # ponto, nao um trecho comum.
+        lineares = list(partes_lineares(comum))
+        if not lineares:
             continue
 
-        pares_sobrepostos += 1
-        for fid, parceiro in ((fid_a, fid_b), (fid_b, fid_a)):
-            parceiros.setdefault(fid, set()).add(parceiro)
-            sobreposicoes.setdefault(fid, []).extend(comuns)
+        # A medicao e em METROS, sobre o elipsoide. Usar QgsGeometry.length()
+        # daria GRAUS no SRC geografico do SNV, e "> 0" em graus aceita o
+        # residuo de 1e-13 que o GEOS deixa ao nodear duas linhas que apenas se
+        # tocam - era o que fazia cada juncao e cada entroncamento da malha
+        # virar falso positivo. Ver a secao 4.2 do cabecalho.
+        comum_linear = QgsGeometry.unaryUnion(lineares)
+        ext_m = comprimento_m(comum_linear)
 
-print(f"Pares sobrepostos detectados: {pares_sobrepostos}")
+        histograma[faixa_sobreposicao(ext_m)] += 1
+        if not sobreposicao_relevante(ext_m):
+            pares_descartados += 1
+            continue
+
+        pares_aceitos.append((fid_a, fid_b, ext_m, comum_linear))
+        for fid, parceiro in ((fid_a, fid_b), (fid_b, fid_a)):
+            parceiros.setdefault(fid, {})[parceiro] = ext_m
+            sobreposicoes.setdefault(fid, []).append(comum_linear)
+
+print(f"Pares com porcao linear em comum : {sum(histograma.values())}")
+print(f"  aceitos (>= {TOLERANCIA_SOBREPOSICAO_M:g} m) : {len(pares_aceitos)}")
+print(f"  descartados pela tolerancia    : {pares_descartados}")
 
 
 # -----------------------------------------------------------------------------
@@ -702,6 +874,7 @@ provedor_saida.addAttributes(
     [
         QgsField(CAMPO_TRECHOS_COINC, QVariant.String, len=TAMANHO_MAX_TRECHOS),
         QgsField(CAMPO_QTD_PARCEIROS, QVariant.Int),
+        QgsField(CAMPO_COD_PARCEIROS, QVariant.String, len=TAMANHO_MAX_TRECHOS),
         QgsField(CAMPO_EXT_SOBREP_KM, QVariant.Double, len=20, prec=3),
         QgsField(CAMPO_PERC_SOBREP, QVariant.Double, len=20, prec=6),
         QgsField(CAMPO_TIPO_SOBREP, QVariant.String, len=20),
@@ -740,10 +913,17 @@ for fid in ordenados:
     if tipo_coinc is not None:
         contagem[f"COINC_{tipo_coinc}"] += 1
 
+    # Diz COM QUEM e com quantos metros, para que cada deteccao possa ser
+    # conferida na tabela de atributos sem inspecao visual.
+    cod_parceiros = texto_parceiros(
+        (feicoes[parceiro][CAMPO_VL_CODIGO], ext_par)
+        for parceiro, ext_par in parceiros[fid].items()
+    )
+
     # Uniao, e nao soma: dois parceiros podem cobrir o mesmo pedaco de eixo.
-    ext_sobrep_km = comprimento_km(QgsGeometry.unaryUnion(sobreposicoes[fid]))
+    ext_sobrep_m = comprimento_m(QgsGeometry.unaryUnion(sobreposicoes[fid]))
     perc_sobrep, tipo_sobrep = classificar_sobreposicao(
-        ext_sobrep_km, comprimento_km(trecho.geometry())
+        ext_sobrep_m, comprimento_m(trecho.geometry())
     )
     contagem[f"SOBREP_{tipo_sobrep}"] += 1
 
@@ -752,7 +932,8 @@ for fid in ordenados:
     nova.setAttributes(trecho.attributes() + [None] * len(campos_novos))
     nova.setAttribute(indices_novos[CAMPO_TRECHOS_COINC], texto)
     nova.setAttribute(indices_novos[CAMPO_QTD_PARCEIROS], len(parceiros[fid]))
-    nova.setAttribute(indices_novos[CAMPO_EXT_SOBREP_KM], ext_sobrep_km)
+    nova.setAttribute(indices_novos[CAMPO_COD_PARCEIROS], cod_parceiros)
+    nova.setAttribute(indices_novos[CAMPO_EXT_SOBREP_KM], em_km(ext_sobrep_m))
     nova.setAttribute(indices_novos[CAMPO_PERC_SOBREP], perc_sobrep)
     nova.setAttribute(indices_novos[CAMPO_TIPO_SOBREP], tipo_sobrep)
     nova.setAttribute(indices_novos[CAMPO_TIPO_COINC], tipo_coinc)
@@ -773,7 +954,59 @@ if saida.featureCount() != len(novas_feicoes):
 
 
 # -----------------------------------------------------------------------------
-# 6) DISSOLVE POR UF E COMBINACAO DE BRs
+# 6) CAMADA DAS PORCOES SOBREPOSTAS
+# -----------------------------------------------------------------------------
+# A camada de prova: contem a geometria do pedaco de eixo que cada par
+# efetivamente compartilha. Ligada sobre a SNV, mostra de imediato se uma
+# deteccao e um eixo comum ou apenas um ponto de juncao - confirmacao que antes
+# dependia de inspecionar a malha a olho, trecho por trecho.
+sobrep_camada = QgsVectorLayer(
+    f"MultiLineString?crs={camada_snv.crs().authid()}",
+    NOME_CAMADA_SOBREPOSICOES,
+    "memory",
+)
+if not sobrep_camada.isValid():
+    raise Exception("Falha ao criar a camada de sobreposicoes em memoria.")
+
+provedor_sobrep = sobrep_camada.dataProvider()
+provedor_sobrep.addAttributes(
+    [
+        QgsField(CAMPO_CODIGO_A, QVariant.String, len=30),
+        QgsField(CAMPO_CODIGO_B, QVariant.String, len=30),
+        QgsField(CAMPO_EXT_SOBREP_M, QVariant.Double, len=20, prec=3),
+    ]
+)
+sobrep_camada.updateFields()
+
+feicoes_sobrep = []
+for fid_a, fid_b, ext_m, geometria_comum in pares_aceitos:
+    # Os dois codigos saem em ordem alfabetica: o par fica identificavel na
+    # tabela independentemente de qual feicao foi lida primeiro.
+    codigos = sorted(
+        codigo_valido(feicoes[fid][CAMPO_VL_CODIGO]) or ROTULO_SEM_CODIGO
+        for fid in (fid_a, fid_b)
+    )
+
+    geometria = QgsGeometry(geometria_comum)
+    # A uniao das partes de um par pode ser simples ou multipart; a camada e
+    # declarada multipart, e converter aqui evita recusa silenciosa na gravacao.
+    geometria.convertToMultiType()
+
+    nova = QgsFeature(sobrep_camada.fields())
+    nova.setGeometry(geometria)
+    nova.setAttributes([codigos[0], codigos[1], ext_m])
+    feicoes_sobrep.append(nova)
+
+if feicoes_sobrep and not provedor_sobrep.addFeatures(feicoes_sobrep)[0]:
+    raise RuntimeError("Falha ao gravar as feicoes na camada de sobreposicoes.")
+sobrep_camada.updateExtents()
+
+if sobrep_camada.featureCount() != len(pares_aceitos):
+    raise RuntimeError("A camada de sobreposicoes nao recebeu um registro por par.")
+
+
+# -----------------------------------------------------------------------------
+# 7) DISSOLVE POR UF E COMBINACAO DE BRs
 # -----------------------------------------------------------------------------
 # native:dissolve faz UNIAO das geometrias do grupo. Simplesmente coleta-las em
 # multipart manteria o eixo compartilhado repetido uma vez por BR, e Ext_km
@@ -819,7 +1052,7 @@ for grupo in dissolvido_bruto.getFeatures():
     if chave not in grupos:
         raise RuntimeError(f"Grupo dissolvido sem correspondencia no detalhe: {chave}.")
 
-    extensao_km = comprimento_km(grupo.geometry())
+    extensao_km = em_km(comprimento_m(grupo.geometry()))
     if extensao_km is not None:
         extensao_total_km += extensao_km
 
@@ -841,17 +1074,32 @@ if sum(grupos.values()) != len(novas_feicoes):
     raise RuntimeError("Soma de Qtd_trechos divergente do total de trechos gravados.")
 
 projeto.addMapLayer(saida)
+projeto.addMapLayer(sobrep_camada)
 projeto.addMapLayer(dissolvido)
 
 
 # -----------------------------------------------------------------------------
-# 7) RESUMO E CONFERENCIA
+# 8) RESUMO E CONFERENCIA
 # -----------------------------------------------------------------------------
 print(f'Excluidos pelo filtro {CAMPO_SUPERFICIE} != "{SUPERFICIE_EXCLUIDA}"'
       f' e {CAMPO_JURISDICAO} = "{JURISDICAO_EXIGIDA}":')
 for motivo in MOTIVOS_EXCLUSAO:
     print(f"  {motivo.ljust(22)}: {contagem[motivo]}")
 print(f'  GEOMETRIA_INVALIDA    : {contagem["GEOMETRIA_INVALIDA"]}')
+
+print(f"Sobreposicoes encontradas, por extensao"
+      f" (tolerancia em uso: {TOLERANCIA_SOBREPOSICAO_M:g} m):")
+# Ordem fixa das faixas, as descartadas primeiro: concentracao em "< 1 m" e o
+# ruido de juncao esperado, e e o que o limiar existe para cortar.
+faixas_impressas = [f"< {FAIXAS_SOBREPOSICAO[0]:g} m"]
+faixas_impressas += [
+    f"{inferior:g}-{superior:g} m"
+    for inferior, superior in zip(FAIXAS_SOBREPOSICAO, FAIXAS_SOBREPOSICAO[1:])
+]
+faixas_impressas += [f">= {FAIXAS_SOBREPOSICAO[-1]:g} m", "nao medida"]
+for faixa in faixas_impressas:
+    if histograma[faixa]:
+        print(f"    {faixa.ljust(15)}: {histograma[faixa]}")
 
 print(f'Camada criada    : {NOME_CAMADA_SAIDA} ({contagem["COM_SOBREPOSICAO"]} trechos)')
 print("  natureza da coincidencia:")
@@ -862,6 +1110,8 @@ for tipo in TIPOS_SOBREP:
     print(f'    {tipo.ljust(15)}: {contagem[f"SOBREP_{tipo}"]}')
 print(f'  {CAMPO_TRECHOS_COINC} nulo    : {contagem["SEM_BR_PARCEIRA"]}')
 
+print(f"Camada criada    : {NOME_CAMADA_SOBREPOSICOES}"
+      f" ({len(pares_aceitos)} porcoes compartilhadas)")
 print(f"Camada criada    : {NOME_CAMADA_DISSOLVIDA} ({len(feicoes_dissolvidas)} grupos,"
       f" {extensao_total_km:.3f} km)")
 
@@ -875,3 +1125,5 @@ if resumo_grupos:
 
 print("Confronte esta saida com a da metodologia 1 (trechos_coincidentes.py):")
 print("  a divergencia entre as duas e o achado de interesse, nao um defeito.")
+print(f"Para conferir um caso, leia {CAMPO_COD_PARCEIROS} na camada de detalhe e")
+print(f"  ligue {NOME_CAMADA_SOBREPOSICOES} sobre a SNV.")

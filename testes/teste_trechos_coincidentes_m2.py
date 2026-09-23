@@ -7,10 +7,12 @@ arvore = ast.parse(fonte)
 
 alvos = {"codigo_valido", "prefixo_codigo", "truncar_texto", "texto_bruto",
          "motivo_exclusao", "texto_rodovias", "tipo_coincidencia",
-         "classificar_sobreposicao", "rotulo_grupo"}
+         "classificar_sobreposicao", "rotulo_grupo", "em_km",
+         "sobreposicao_relevante", "texto_parceiros", "faixa_sobreposicao"}
 consts = {"SEPARADOR_CODIGOS", "TAMANHO_MAX_TRECHOS", "SUPERFICIE_EXCLUIDA",
           "JURISDICAO_EXIGIDA", "MOTIVOS_EXCLUSAO", "LIMIAR_SOBREPOSICAO_TOTAL",
-          "TIPOS_COINC", "TIPOS_SOBREP"}
+          "TIPOS_COINC", "TIPOS_SOBREP", "TOLERANCIA_SOBREPOSICAO_M",
+          "FAIXAS_SOBREPOSICAO", "ROTULO_SEM_CODIGO"}
 
 ns = {"math": math, "NULL": object()}
 trechos = []
@@ -124,7 +126,78 @@ checa("rotulo normal", g["rotulo_grupo"]("DF", "020;010"), "DF: 020;010")
 checa("rotulo sem BR", g["rotulo_grupo"]("DF", None), "DF: (sem BR identificada)")
 checa("rotulo sem UF", g["rotulo_grupo"](None, "010"), "(sem UF): 010")
 
-# --- 9) as copias do m1 nao divergiram do original ---
+# --- 9) o criterio que gerou o bug: comprimento minimo medido em METROS ---
+# O codigo anterior testava parte.length() > 0, e length() devolve GRAUS no SRC
+# geografico do SNV. O residuo de ~1e-8 que o GEOS deixa ao nodear duas linhas
+# que apenas se tocam passava como prova, e cada juncao da malha virava falso
+# positivo. Este e o caso que a correcao precisa reprovar.
+checa("residuo do GEOS", g["sobreposicao_relevante"](1e-8), False)
+checa("residuo em grau", g["sobreposicao_relevante"](1e-13), False)
+checa("zero", g["sobreposicao_relevante"](0.0), False)
+# Limiar inclusivo.
+checa("no limiar", g["sobreposicao_relevante"](g["TOLERANCIA_SOBREPOSICAO_M"]), True)
+checa("logo abaixo", g["sobreposicao_relevante"](9.99), False)
+checa("multiplex real", g["sobreposicao_relevante"](12043.7), True)
+checa("tolerancia e 10 m", g["TOLERANCIA_SOBREPOSICAO_M"], 10.0)
+for entrada in [None, float("nan"), float("inf"), float("-inf"), -5.0]:
+    checa(f"sobreposicao_relevante({entrada!r})",
+          g["sobreposicao_relevante"](entrada), False)
+
+# --- 10) conversao de unidade preservando a ausencia de medida ---
+checa("metros para km", g["em_km"](12000.0), 12.0)
+checa("mil metros", g["em_km"](1000.0), 1.0)
+checa("divide por mil", math.isclose(g["em_km"](12043.7), 12.0437), True)
+checa("zero metros", g["em_km"](0.0), 0.0)
+checa("sem medida", g["em_km"](None), None)
+
+# --- 11) lista de parceiros: com quem e com quantos metros ---
+checa("um parceiro",
+      g["texto_parceiros"]([("222BCE0240", 12043.7)]), "222BCE0240(12043.7m)")
+# Ordem decrescente por extensao: se houver truncamento, sobrevive a evidencia
+# mais forte.
+checa("ordem decrescente",
+      g["texto_parceiros"]([("135BMA0170", 14.1), ("222BCE0240", 12043.7)]),
+      "222BCE0240(12043.7m);135BMA0170(14.1m)")
+checa("ordem independe da entrada",
+      g["texto_parceiros"]([("222BCE0240", 12043.7), ("135BMA0170", 14.1)]),
+      g["texto_parceiros"]([("135BMA0170", 14.1), ("222BCE0240", 12043.7)]))
+# Empate resolvido pelo codigo, para o texto ser reproduzivel.
+checa("empate pelo codigo",
+      g["texto_parceiros"]([("222BCE0240", 50.0), ("135BMA0170", 50.0)]),
+      "135BMA0170(50.0m);222BCE0240(50.0m)")
+checa("sem parceiros", g["texto_parceiros"]([]), None)
+# Parceiro sem codigo e nomeado; sem medida vai para o fim e nao recebe zero.
+checa("parceiro sem codigo",
+      g["texto_parceiros"]([(None, 30.0)]), "(sem codigo)(30.0m)")
+checa("rotulo sem codigo", g["ROTULO_SEM_CODIGO"], "(sem codigo)")
+checa("sem medida por ultimo",
+      g["texto_parceiros"]([("111BMA0010", None), ("222BCE0240", 5.0)]),
+      "222BCE0240(5.0m);111BMA0010(nao medida)")
+
+# --- 12) truncamento preserva a evidencia mais forte ---
+muitos = [(f"{i:03d}BMA0010", float(i)) for i in range(1, 40)]
+texto = g["texto_parceiros"](muitos)
+checa("truncado no limite", len(texto), g["TAMANHO_MAX_TRECHOS"])
+checa("truncamento sinalizado", texto.endswith("...[TRUNCADO]"), True)
+checa("maior sobreposicao sobrevive", texto.startswith("039BMA0010(39.0m);"), True)
+
+# --- 13) faixas do histograma, derivadas de FAIXAS_SOBREPOSICAO ---
+for entrada, esperado in [
+    (0.001, "< 1 m"), (0.999, "< 1 m"),
+    (1.0, "1-10 m"), (9.99, "1-10 m"),
+    (10.0, "10-100 m"), (99.9, "10-100 m"),
+    (100.0, "100-1000 m"), (999.9, "100-1000 m"),
+    (1000.0, ">= 1000 m"), (12043.7, ">= 1000 m"),
+]:
+    checa(f"faixa_sobreposicao({entrada!r})",
+          g["faixa_sobreposicao"](entrada), esperado)
+for entrada in [None, float("nan"), float("inf")]:
+    checa(f"faixa_sobreposicao({entrada!r})",
+          g["faixa_sobreposicao"](entrada), "nao medida")
+# Os limites declarados sao os usados nos rotulos.
+checa("faixas declaradas", g["FAIXAS_SOBREPOSICAO"], (1.0, 10.0, 100.0, 1000.0))
+
+# --- 14) as copias do m1 nao divergiram do original ---
 # O script m2 declara copiar verbatim as funcoes puras do m1. Uma divergencia
 # silenciosa entre as duas copias faria as metodologias filtrarem universos
 # diferentes e a comparacao entre elas perderia sentido.
