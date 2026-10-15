@@ -6,7 +6,8 @@ arvore = ast.parse(fonte)
 
 nomes_func = {"codigo_valido", "prefixo_codigo", "quase_igual",
               "formatar_lista_codigos", "truncar_texto", "observacao_texto",
-              "selecionar_codigo", "rodovias_coincidentes_texto"}
+              "selecionar_codigo", "rodovias_coincidentes_texto",
+              "valor_unanime"}
 nomes_const = {"TOLERANCIA_EMPATE_DISTANCIA_M", "TAMANHO_MAX_OBS",
                "LIMITE_CODIGOS_LISTADOS"}
 
@@ -252,5 +253,39 @@ for pc, via in casos_inv:
 PARES = set()
 _, crit, _, rodcoinc, _ = sel(entrada(**{"116A": 3.0, "116B": 9.0}), "116", None, None)
 checa("fronteira nao preenche", (crit, rodcoinc), ("TRECHO_FRONTEIRA", None))
+
+# --- 22) Administracao / Jurisdicao: valor do trecho atribuido -------------
+vu = ns["valor_unanime"]
+
+# Caso comum: uma unica feicao.
+checa("unanime: feicao unica", vu(["Federal"]), ("Federal", False))
+
+# Varias feicoes do mesmo codigo empatadas, com o mesmo valor -> gravado.
+checa("unanime: valores iguais", vu(["Federal", "Federal"]), ("Federal", False))
+
+# Espacos nas bordas nao geram falsa divergencia.
+checa("unanime: espacos", vu([" Federal", "Federal  "]), ("Federal", False))
+
+# Valores diferentes -> NULL e divergencia sinalizada; nenhum e escolhido.
+checa("unanime: divergentes",
+      vu(["Federal", "Concessao Federal"]), (None, True))
+
+# Valor ausente na SNV -> NULL, sem divergencia.
+checa("unanime: nulo", vu([None]), (None, False))
+checa("unanime: sentinela NULL", vu(["NULL"]), (None, False))
+checa("unanime: texto vazio", vu(["   "]), (None, False))
+checa("unanime: todos ausentes", vu([None, "", "NULL"]), (None, False))
+
+# Ausente numa feicao e presente noutra conta como divergencia: a ausencia
+# nao prova que o valor seja o mesmo.
+checa("unanime: ausente x presente", vu([None, "Federal"]), (None, True))
+
+# Aceita gerador, como no laco do script.
+checa("unanime: gerador", vu(v for v in ["Federal"]), ("Federal", False))
+
+# Determinismo: o resultado nao depende da ordem das feicoes.
+resultados = {vu(list(ordem)) for ordem in
+              itertools.permutations(["Federal", "Estadual", "Federal"])}
+checa("unanime: ordem irrelevante", resultados, {(None, True)})
 
 print(f"{ok} verificacoes OK")

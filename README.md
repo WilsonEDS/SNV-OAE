@@ -35,7 +35,7 @@ em `NOME_CAMADA_OAE` e `NOME_CAMADA_SNV`.
 | Camada | Geometria | Campos obrigatórios |
 |---|---|---|
 | **SGE** (OAEs) | pontual | `Extensão (m)`, `Via` |
-| **SNV** (rodovias) | linear | `vl_codigo`, `vl_km_inic`, `vl_km_fina`, `vl_br`, `sg_uf`, `sg_tipo_tr` |
+| **SNV** (rodovias) | linear | `vl_codigo`, `vl_km_inic`, `vl_km_fina`, `vl_br`, `sg_uf`, `sg_tipo_tr`, `ds_tipo_ad`, `ds_jurisdi` |
 
 A extensão da OAE serve apenas para dimensionar o raio de busca — nunca para
 decidir o trecho. `vl_br` + `sg_uf` + `sg_tipo_tr` formam a **chave de
@@ -44,11 +44,13 @@ continuidade**: só trechos com a mesma chave são considerados vizinhos.
 ## Saída
 
 Uma camada em memória (`NOME_CAMADA_SAIDA`) com todos os campos originais da
-OAE mais nove campos de resultado e rastreabilidade:
+OAE mais onze campos de resultado e rastreabilidade:
 
 | Campo | Tipo | Conteúdo |
 |---|---|---|
 | `Trecho_SNV` | texto | `vl_codigo` selecionado, ou NULL |
+| `Administracao` | texto | `ds_tipo_ad` do trecho atribuído, ou NULL |
+| `Jurisdicao` | texto | `ds_jurisdi` do trecho atribuído, ou NULL |
 | `km_SNV` | real | quilômetro interpolado, ou NULL |
 | `Dist_SNV_m` | real | distância, em metros, da OAE ao trecho atribuído |
 | `Raio_SNV` | real | raio de busca aplicado àquela OAE |
@@ -57,6 +59,12 @@ OAE mais nove campos de resultado e rastreabilidade:
 | `Criterio` | texto | um dos seis critérios abaixo |
 | `Sentido_KM` | texto | `INICIO_GEOM_KM_INIC`, `INICIO_GEOM_KM_FINAL`, `NAO_DETERMINADO` ou `NAO_APLICAVEL` |
 | `Obs_SNV` | texto | trilha de rastreabilidade: distâncias, margens, códigos concorrentes e causas |
+
+`Administracao` e `Jurisdicao` são lidos da SNV no momento em que o
+`Trecho_SNV` é atribuído, da feição do código mais próxima da OAE. Ficam
+preenchidos mesmo quando o km não pode ser calculado. Se duas feições do mesmo
+código estiverem à mesma distância e discordarem nesses valores, o campo fica
+NULL e a divergência é registrada em `Obs_SNV`.
 
 O script também imprime três resumos conferidos por somatórias: associação,
 quilometragem e diagnóstico de sentido dos trechos SNV.
@@ -125,7 +133,7 @@ do ambiente QGIS:
 
 ```bash
 python3 testes/teste_funcoes_puras.py     # 45 verificações
-python3 testes/teste_classificacao.py     # 55 verificações
+python3 testes/teste_classificacao.py     # 66 verificações
 ```
 
 Cobrem a normalização de dados, a determinação do sentido, os seis critérios e

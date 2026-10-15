@@ -33,6 +33,8 @@
 #       - CAMPO_BR_SNV      ("vl_br")      : numero da BR.
 #       - CAMPO_UF_SNV      ("sg_uf")      : UF.
 #       - CAMPO_TIPO_SNV    ("sg_tipo_tr") : tipo do trecho.
+#       - CAMPO_ADMIN_SNV   ("ds_tipo_ad") : tipo de administracao do trecho.
+#       - CAMPO_JURIS_SNV   ("ds_jurisdi") : jurisdicao do trecho.
 #         (vl_br + sg_uf + sg_tipo_tr formam a "chave de continuidade": somente
 #          trechos com a mesma chave sao considerados vizinhos entre si.)
 #
@@ -43,6 +45,13 @@
 #   mais os campos de resultado e auditoria:
 #
 #       Trecho_SNV  (texto)  codigo vl_codigo selecionado, ou NULL.
+#       Administracao (texto) ds_tipo_ad do trecho atribuido, ou NULL.
+#       Jurisdicao  (texto)  ds_jurisdi do trecho atribuido, ou NULL.
+#                            Ambos sao lidos no momento em que o Trecho_SNV e
+#                            atribuido, da feicao do codigo que realiza a menor
+#                            distancia da OAE - a mesma usada no calculo do km.
+#                            Ficam preenchidos ainda que o km nao possa ser
+#                            calculado, e NULL sempre que nao houver trecho.
 #       km_SNV      (real)   quilometro interpolado, ou NULL.
 #       Dist_SNV_m  (real)   distancia planimetrica, em metros, entre a OAE e a
 #                            geometria do codigo selecionado (evidencia direta
@@ -224,8 +233,12 @@ CAMPO_VL_KM_FINA = "vl_km_fina"
 CAMPO_BR_SNV = "vl_br"
 CAMPO_UF_SNV = "sg_uf"
 CAMPO_TIPO_SNV = "sg_tipo_tr"
+CAMPO_ADMIN_SNV = "ds_tipo_ad"
+CAMPO_JURIS_SNV = "ds_jurisdi"
 
 CAMPO_TRECHO_SNV = "Trecho_SNV"
+CAMPO_ADMINISTRACAO = "Administracao"
+CAMPO_JURISDICAO = "Jurisdicao"
 CAMPO_KM_SNV = "km_SNV"
 CAMPO_DIST_SNV = "Dist_SNV_m"
 CAMPO_RAIO_SNV = "Raio_SNV"
@@ -439,6 +452,36 @@ def formatar_lista_codigos(codigos, limite=LIMITE_CODIGOS_LISTADOS):
     if len(ordenados) <= limite:
         return ",".join(ordenados)
     return ",".join(ordenados[:limite]) + f",+{len(ordenados) - limite}"
+
+
+def valor_unanime(valores):
+    """Reduz a um unico valor um atributo lido de uma ou mais feicoes do trecho.
+
+    Parametros:
+        valores: valores brutos do atributo nas feicoes do codigo atribuido que
+            realizam a menor distancia da OAE (normalmente uma so).
+
+    Retorna:
+        (valor, divergente)
+        valor: texto normalizado comum a todas as feicoes, ou None.
+        divergente: True quando as feicoes discordam entre si.
+
+    Hipoteses metodologicas:
+        - Um mesmo vl_codigo pode estar repartido em varias feicoes, e duas
+          delas podem estar a mesma distancia da OAE. Se todas trazem o mesmo
+          valor, ele descreve o trecho sem ambiguidade e e gravado.
+        - Se discordam, nao ha como saber qual descreve a posicao da OAE sem
+          arbitrar - e o procedimento nao arbitra em parte alguma. O campo fica
+          NULL e a divergencia e devolvida para registro em Obs_SNV.
+        - Os valores passam por codigo_valido(), de modo que espacos nas bordas,
+          texto vazio e sentinelas como "NULL" nao gerem falsa divergencia nem
+          falso preenchimento. Valor ausente numa feicao e presente noutra conta
+          como divergencia: a ausencia nao e prova de que o valor seja o mesmo.
+    """
+    distintos = {codigo_valido(valor) for valor in valores}
+    if len(distintos) == 1:
+        return next(iter(distintos)), False
+    return None, len(distintos) > 1
 
 
 def truncar_texto(texto, limite):
@@ -980,6 +1023,7 @@ obrigatorios_oae = {CAMPO_EXTENSAO, CAMPO_VIA}
 obrigatorios_snv = {
     CAMPO_VL_CODIGO, CAMPO_VL_KM_INIC, CAMPO_VL_KM_FINA,
     CAMPO_BR_SNV, CAMPO_UF_SNV, CAMPO_TIPO_SNV,
+    CAMPO_ADMIN_SNV, CAMPO_JURIS_SNV,
 }
 
 faltantes_oae = sorted(obrigatorios_oae - campos_oae)
@@ -991,6 +1035,8 @@ if faltantes_snv:
 
 campos_novos = {
     CAMPO_TRECHO_SNV,
+    CAMPO_ADMINISTRACAO,
+    CAMPO_JURISDICAO,
     CAMPO_KM_SNV,
     CAMPO_DIST_SNV,
     CAMPO_RAIO_SNV,
@@ -1399,9 +1445,28 @@ if not saida.isValid():
 
 provedor_saida = saida.dataProvider()
 provedor_saida.addAttributes(camada_oae.fields())
+
+
+def comprimento_origem(nome_campo):
+    """Comprimento declarado de um campo de texto da SNV, para replica-lo na saida.
+
+    Retorna o comprimento do campo de origem, ou TAMANHO_MAX_OBS quando o
+    provedor nao o informa (comprimento 0 ou negativo, comum em GeoPackage).
+    Replicar o comprimento evita truncar na saida um valor que a propria SNV
+    comporta.
+    """
+    comprimento = camada_snv.fields().field(nome_campo).length()
+    return comprimento if comprimento and comprimento > 0 else TAMANHO_MAX_OBS
+
+
+TAMANHO_ADMINISTRACAO = comprimento_origem(CAMPO_ADMIN_SNV)
+TAMANHO_JURISDICAO = comprimento_origem(CAMPO_JURIS_SNV)
+
 provedor_saida.addAttributes(
     [
         QgsField(CAMPO_TRECHO_SNV, QVariant.String, len=80),
+        QgsField(CAMPO_ADMINISTRACAO, QVariant.String, len=TAMANHO_ADMINISTRACAO),
+        QgsField(CAMPO_JURISDICAO, QVariant.String, len=TAMANHO_JURISDICAO),
         QgsField(CAMPO_KM_SNV, QVariant.Double, len=20, prec=3),
         QgsField(CAMPO_DIST_SNV, QVariant.Double, len=20, prec=3),
         QgsField(CAMPO_RAIO_SNV, QVariant.Double, len=20, prec=3),
@@ -1415,6 +1480,8 @@ provedor_saida.addAttributes(
 saida.updateFields()
 
 idx_trecho = saida.fields().indexOf(CAMPO_TRECHO_SNV)
+idx_administracao = saida.fields().indexOf(CAMPO_ADMINISTRACAO)
+idx_jurisdicao = saida.fields().indexOf(CAMPO_JURISDICAO)
 idx_km = saida.fields().indexOf(CAMPO_KM_SNV)
 idx_dist = saida.fields().indexOf(CAMPO_DIST_SNV)
 idx_raio = saida.fields().indexOf(CAMPO_RAIO_SNV)
@@ -1441,6 +1508,7 @@ contagem.update(
         "ALERTA_EXTREMO": 0,
         "COINCIDENCIA_DETECTADA": 0,
         "COINCIDENCIA_MESMA_BR": 0,
+        "ATRIBUTO_TRECHO_DIVERGENTE": 0,
     }
 )
 
@@ -1589,14 +1657,32 @@ for oae in camada_oae.getFeatures():
         continue
 
     distancia_escolhida = por_codigo[codigo_escolhido]["distancia"]
+    feicoes_mais_proximas = por_codigo[codigo_escolhido]["feicoes_mais_proximas"]
     nova.setAttribute(idx_trecho, codigo_escolhido)
     nova.setAttribute(idx_dist, round(distancia_escolhida, 3))
+
+    # Administracao e Jurisdicao descrevem o TRECHO atribuido e sao lidas aqui,
+    # junto do Trecho_SNV, e nao da feicao usada no km: o calculo do km pode
+    # sair antecipadamente (empate entre geometrias, sentido indeterminado), e
+    # a OAE ficaria com trecho atribuido mas sem esses atributos.
+    for idx_destino, campo_origem, tamanho, marcador in (
+        (idx_administracao, CAMPO_ADMIN_SNV, TAMANHO_ADMINISTRACAO,
+         "ADMINISTRACAO_DIVERGENTE_ENTRE_GEOMETRIAS"),
+        (idx_jurisdicao, CAMPO_JURIS_SNV, TAMANHO_JURISDICAO,
+         "JURISDICAO_DIVERGENTE_ENTRE_GEOMETRIAS"),
+    ):
+        valor, divergente = valor_unanime(
+            snv_por_id[fid][campo_origem] for fid, _ in feicoes_mais_proximas
+        )
+        nova.setAttribute(idx_destino, truncar_texto(valor, tamanho))
+        if divergente:
+            observacao = observacao_texto(marcador, observacao)
+            contagem["ATRIBUTO_TRECHO_DIVERGENTE"] += 1
 
     # O codigo pode estar em mais de uma feicao. A geometria usada para
     # projetar a OAE precisa ser univoca pela menor distancia; empate entre
     # geometrias do mesmo codigo nao recebe desempate, pois escolher qualquer
     # uma delas arbitraria a posicao linear e, portanto, o proprio km.
-    feicoes_mais_proximas = por_codigo[codigo_escolhido]["feicoes_mais_proximas"]
     if len(feicoes_mais_proximas) != 1:
         nova.setAttribute(idx_sentido, "NAO_DETERMINADO")
         nova.setAttribute(idx_observacao, observacao_texto(
@@ -1723,6 +1809,9 @@ for motivo, quantidade in sorted(motivos_sem_associacao.items()):
 print(f"OAEs com Via ausente/nao normalizavel: {contagem['VIA_NAO_NORMALIZAVEL']}")
 print(f"Mediana das extensoes validas:         {mediana_extensao:.3f} m")
 print(f"Feicoes SNV sem geometria/reprojecao:  {snv_descartadas_geometria}")
+# Conta OCORRENCIAS: uma OAE pode divergir nos dois atributos ao mesmo tempo.
+print(f"Administracao/Jurisdicao divergentes:  {contagem['ATRIBUTO_TRECHO_DIVERGENTE']}"
+      " ocorrencias (geometrias empatadas do mesmo codigo)")
 print(f"Camada criada:                         {NOME_CAMADA_SAIDA}")
 print()
 print("=" * 72)
