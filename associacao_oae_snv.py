@@ -35,7 +35,9 @@
 #       - CAMPO_VL_KM_FINA  ("vl_km_fina") : km final do trecho.
 #       - CAMPO_ADMIN_SNV   ("ds_tipo_ad") : tipo de administracao do trecho.
 #       - CAMPO_JURIS_SNV   ("ds_jurisdi") : jurisdicao do trecho.
-#       - CAMPO_VERSAO_SNV_ORIGEM ("Versão SNV") : versao da SNV do trecho.
+#       - CAMPO_VERSAO_SNV_ORIGEM ("versao_snv") : versao da SNV do trecho.
+#         Os nomes de campo sao localizados sem distinguir acento, maiusculas,
+#         "_" ou espacos, e tambem pelo alias (ver resolver_campo).
 #       - geometria: LineString (ou MultiLineString de uma unica parte)
 #         digitalizada no sentido crescente do km.
 #
@@ -48,7 +50,7 @@
 #   aqui - seguidos dos campos criados, nesta ordem:
 #
 #       Trecho_SNV  (texto)  codigo vl_codigo selecionado, ou NULL.
-#       Versao_SNV  (texto)  "Versão SNV" do trecho atribuido, ou NULL: registra
+#       Versao_SNV  (texto)  versao_snv do trecho atribuido, ou NULL: registra
 #                            com qual versao da SNV o km foi calculado.
 #       Administracao (texto) ds_tipo_ad do trecho atribuido, ou NULL.
 #       Jurisdicao  (texto)  ds_jurisdi do trecho atribuido, ou NULL.
@@ -220,9 +222,11 @@
 #
 # =============================================================================
 
+import difflib
 import math
 import re
 import statistics
+import unicodedata
 from collections import Counter
 
 from qgis.PyQt.QtCore import QVariant
@@ -265,7 +269,9 @@ CAMPO_VL_KM_INIC = "vl_km_inic"
 CAMPO_VL_KM_FINA = "vl_km_fina"
 CAMPO_ADMIN_SNV = "ds_tipo_ad"
 CAMPO_JURIS_SNV = "ds_jurisdi"
-CAMPO_VERSAO_SNV_ORIGEM = "Versão SNV"
+# Nome real do campo na SNV_202607A (a tabela de atributos pode exibi-lo como
+# "Versão SNV"); a busca de resolver_campo tolera essas diferencas de grafia.
+CAMPO_VERSAO_SNV_ORIGEM = "versao_snv"
 
 CAMPO_TRECHO_SNV = "Trecho_SNV"
 CAMPO_VERSAO_SNV = "Versao_SNV"
@@ -517,31 +523,114 @@ def valor_unanime(valores):
     return None, len(distintos) > 1
 
 
-def indices_mantidos(nomes_campos, nomes_excluidos):
+def normalizar_nome_campo(nome):
+    """Forma de comparacao de um nome de campo, imune a diferencas de grafia.
+
+    Remove acentos, ignora maiusculas e trata "_" e qualquer espaco (inclusive
+    o nao separavel) como um espaco unico. Assim "Versão SNV", "versao_snv" e
+    "VERSAO  SNV" se equivalem.
+    """
+    texto = unicodedata.normalize("NFKD", str(nome or ""))
+    texto = "".join(c for c in texto if not unicodedata.combining(c))
+    return " ".join(texto.replace("_", " ").split()).casefold()
+
+
+def resolver_campo(campos, nome):
+    """Encontra na camada o campo que corresponde a um nome pedido.
+
+    Parametros:
+        campos: lista de (nome_real, alias) dos campos da camada.
+        nome: nome pedido pelo script (ex.: "Versão SNV").
+
+    Retorna:
+        o nome REAL do campo, ou None se nenhum corresponder.
+
+    Excecoes:
+        ValueError quando mais de um campo corresponde: nao se escolhe entre
+        eles.
+
+    Hipoteses metodologicas:
+        - Ordem de busca: nome identico; depois nome com grafia normalizada
+          (normalizar_nome_campo); depois alias normalizado. O primeiro nivel
+          com correspondencia decide.
+        - O nome real e o que importa para ler o valor; o alias e so o rotulo
+          que a tabela de atributos pode estar exibindo.
+        - Nome cortado (ex.: limite de 10 bytes do Shapefile) NAO e aceito:
+          um prefixo poderia casar com o campo errado ("Código" dentro de
+          "Código SNV").
+    """
+    exatos = [real for real, _ in campos if real == nome]
+    if exatos:
+        return exatos[0]
+    alvo = normalizar_nome_campo(nome)
+    for indice in (0, 1):
+        achados = [c[0] for c in campos if c[indice] and normalizar_nome_campo(c[indice]) == alvo]
+        if len(achados) == 1:
+            return achados[0]
+        if len(achados) > 1:
+            raise ValueError(f'"{nome}" corresponde a mais de um campo: {", ".join(achados)}')
+    return None
+
+
+def mensagem_campo_ausente(campos, nomes, nome_camada):
+    """Mensagem de erro para campos obrigatorios nao encontrados numa camada.
+
+    Lista, para cada nome, os campos mais parecidos e, ao final, todos os campos
+    da camada com seus aliases, para que o nome real possa ser conferido e
+    ajustado no script.
+    """
+    rotulos = {}
+    for real, alias in campos:
+        rotulos.setdefault(normalizar_nome_campo(real), real)
+        if alias:
+            rotulos.setdefault(normalizar_nome_campo(alias), real)
+    linhas = []
+    for nome in nomes:
+        parecidos = difflib.get_close_matches(
+            normalizar_nome_campo(nome), list(rotulos), n=3, cutoff=0.6)
+        sugestao = ", ".join(dict.fromkeys(rotulos[p] for p in parecidos)) or "nenhum"
+        linhas.append(f'Campo "{nome}" nao encontrado em {nome_camada}. '
+                      f"Mais parecidos: {sugestao}")
+    existentes = ", ".join(
+        f"{real} (alias: {alias})" if alias and alias != real else real
+        for real, alias in campos)
+    linhas.append(f"Campos da camada: {existentes}")
+    return "\n".join(linhas)
+
+
+def indices_mantidos(campos, nomes_excluidos):
     """Escolhe os campos da camada de origem que serao copiados para a saida.
 
     Parametros:
-        nomes_campos: nomes dos campos da camada de origem, na ordem original.
+        campos: lista de (nome_real, alias) da camada de origem, na ordem
+            original.
         nomes_excluidos: nomes que NAO devem ser copiados.
 
     Retorna:
         (indices, excluidos, nao_encontrados)
         indices: posicoes dos campos mantidos, na ordem original.
-        excluidos: nomes efetivamente retirados.
-        nao_encontrados: nomes pedidos para exclusao que a camada nao tem -
-            informados no console para que um nome digitado diferente (acento,
-            espaco) nao passe despercebido.
+        excluidos: nomes reais efetivamente retirados.
+        nao_encontrados: nomes pedidos para exclusao que a camada nao tem (ou
+            que correspondem a mais de um campo) - informados no console, para
+            que nao passem despercebidos.
 
     Hipotese metodologica:
-        A comparacao e exata. Aproximar nomes poderia retirar uma coluna que
-        apenas se parece com a pedida.
+        Usa a mesma busca de resolver_campo: tolera acento, maiusculas, "_" e
+        espacos, mas nunca prefixos. Em caso de ambiguidade nada e retirado.
     """
-    excluir = set(nomes_excluidos)
-    indices = [i for i, nome in enumerate(nomes_campos) if nome not in excluir]
-    presentes = set(nomes_campos)
-    excluidos = [n for n in nomes_excluidos if n in presentes]
-    nao_encontrados = [n for n in nomes_excluidos if n not in presentes]
-    return indices, excluidos, nao_encontrados
+    retirar = []
+    nao_encontrados = []
+    for nome in nomes_excluidos:
+        try:
+            real = resolver_campo(campos, nome)
+        except ValueError:
+            real = None
+        if real is None:
+            nao_encontrados.append(nome)
+        else:
+            retirar.append(real)
+    indices = [i for i, (real, _) in enumerate(campos) if real not in retirar]
+    return indices, retirar, nao_encontrados
 
 
 def truncar_texto(texto, limite):
@@ -1223,20 +1312,50 @@ if camada_snv.geometryType() != QgsWkbTypes.LineGeometry:
     raise Exception(f'A camada "{NOME_CAMADA_SNV}" precisa ser linear.')
 
 campos_oae = {campo.name() for campo in camada_oae.fields()}
-campos_snv = {campo.name() for campo in camada_snv.fields()}
 
-obrigatorios_oae = {CAMPO_EXTENSAO, CAMPO_VIA, CAMPO_RELACAO_SNV}
-obrigatorios_snv = {
-    CAMPO_VL_CODIGO, CAMPO_VL_KM_INIC, CAMPO_VL_KM_FINA,
-    CAMPO_ADMIN_SNV, CAMPO_JURIS_SNV, CAMPO_VERSAO_SNV_ORIGEM,
-}
+def resolver_obrigatorios(camada, nome_camada, nomes):
+    """Localiza os campos obrigatorios de uma camada e devolve seus nomes reais.
 
-faltantes_oae = sorted(obrigatorios_oae - campos_oae)
-faltantes_snv = sorted(obrigatorios_snv - campos_snv)
-if faltantes_oae:
-    raise Exception(f"Campos ausentes em {NOME_CAMADA_OAE}: {', '.join(faltantes_oae)}")
-if faltantes_snv:
-    raise Exception(f"Campos ausentes em {NOME_CAMADA_SNV}: {', '.join(faltantes_snv)}")
+    Retorna dict nome_pedido -> nome_real. Interrompe a execucao, com a lista
+    dos campos existentes e dos mais parecidos, se algum faltar ou for ambiguo.
+    Registra no console cada campo achado com grafia diferente da pedida.
+    """
+    campos = [(campo.name(), campo.alias()) for campo in camada.fields()]
+    reais, ausentes = {}, []
+    for nome in nomes:
+        try:
+            real = resolver_campo(campos, nome)
+        except ValueError as erro:
+            raise Exception(f"Em {nome_camada}: {erro}")
+        if real is None:
+            ausentes.append(nome)
+        else:
+            reais[nome] = real
+            if real != nome:
+                print(f'Campo "{nome}" encontrado em {nome_camada} como "{real}".')
+    if ausentes:
+        raise Exception(mensagem_campo_ausente(campos, ausentes, nome_camada))
+    return reais
+
+
+# As constantes passam a guardar o nome REAL de cada campo, usado no restante
+# do script para ler os valores.
+reais_oae = resolver_obrigatorios(
+    camada_oae, NOME_CAMADA_OAE, (CAMPO_EXTENSAO, CAMPO_VIA, CAMPO_RELACAO_SNV))
+CAMPO_EXTENSAO = reais_oae[CAMPO_EXTENSAO]
+CAMPO_VIA = reais_oae[CAMPO_VIA]
+CAMPO_RELACAO_SNV = reais_oae[CAMPO_RELACAO_SNV]
+
+reais_snv = resolver_obrigatorios(
+    camada_snv, NOME_CAMADA_SNV,
+    (CAMPO_VL_CODIGO, CAMPO_VL_KM_INIC, CAMPO_VL_KM_FINA,
+     CAMPO_ADMIN_SNV, CAMPO_JURIS_SNV, CAMPO_VERSAO_SNV_ORIGEM))
+CAMPO_VL_CODIGO = reais_snv[CAMPO_VL_CODIGO]
+CAMPO_VL_KM_INIC = reais_snv[CAMPO_VL_KM_INIC]
+CAMPO_VL_KM_FINA = reais_snv[CAMPO_VL_KM_FINA]
+CAMPO_ADMIN_SNV = reais_snv[CAMPO_ADMIN_SNV]
+CAMPO_JURIS_SNV = reais_snv[CAMPO_JURIS_SNV]
+CAMPO_VERSAO_SNV_ORIGEM = reais_snv[CAMPO_VERSAO_SNV_ORIGEM]
 
 campos_novos = {
     CAMPO_TRECHO_SNV,
@@ -1607,7 +1726,7 @@ if not saida.isValid():
 
 provedor_saida = saida.dataProvider()
 indices_oae_mantidos, campos_oae_excluidos, campos_oae_nao_encontrados = indices_mantidos(
-    camada_oae.fields().names(), CAMPOS_OAE_EXCLUIDOS)
+    [(campo.name(), campo.alias()) for campo in camada_oae.fields()], CAMPOS_OAE_EXCLUIDOS)
 provedor_saida.addAttributes([camada_oae.fields().at(i) for i in indices_oae_mantidos])
 
 

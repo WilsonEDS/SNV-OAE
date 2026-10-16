@@ -11,7 +11,8 @@ alvos = {"numero_finito_positivo", "numero_finito", "normalizar_via",
          "preparar_trechos", "diagnosticar_sentido",
          "diagnosticar_trechos", "prefixo_codigo", "texto_generico",
          "texto_saida_obs", "texto_saida_criterio", "status_validacao",
-         "indices_mantidos"}
+         "indices_mantidos", "normalizar_nome_campo", "resolver_campo",
+         "mensagem_campo_ausente"}
 consts = {"TAMANHO_MAX_OBS", "LIMITE_CODIGOS_LISTADOS", "TOLERANCIA_CONEXAO_M",
           "CASAS_DECIMAIS_KM", "CAMPO_VL_CODIGO", "TEXTO_CRITERIO", "TEXTO_OBS",
           "TEXTO_VALOR_OBS", "STATUS_VALIDADO", "STATUS_A_VALIDAR",
@@ -19,10 +20,18 @@ consts = {"TAMANHO_MAX_OBS", "LIMITE_CODIGOS_LISTADOS", "TOLERANCIA_CONEXAO_M",
           "CAMPO_VL_KM_INIC",
           "CAMPO_VL_KM_FINA"}
 
-ns = {"math": math, "re": re, "NULL": object()}
+import difflib, unicodedata
+ns = {"math": math, "re": re, "NULL": object(), "difflib": difflib,
+      "unicodedata": unicodedata}
 trechos = []
+vistos = set()
 for no in arvore.body:
-    if isinstance(no, ast.Assign) and getattr(no.targets[0], "id", None) in consts:
+    # So a PRIMEIRA atribuicao de cada constante (o valor literal). As
+    # posteriores, como CAMPO_VL_CODIGO = reais_snv[...], dependem das camadas
+    # carregadas no QGIS.
+    nome_const = getattr(no.targets[0], "id", None) if isinstance(no, ast.Assign) else None
+    if nome_const in consts and nome_const not in vistos:
+        vistos.add(nome_const)
         trechos.append(ast.get_source_segment(fonte, no))
     if isinstance(no, ast.FunctionDef) and no.name in alvos:
         trechos.append(ast.get_source_segment(fonte, no))
@@ -139,6 +148,7 @@ USO_INTERNO = {  # contadores, chaves do resumo do console, sentinelas e nomes
     "ATRIBUTO_TRECHO_DIVERGENTE", "COINCIDENCIA_DETECTADA", "COINCIDENCIA_MESMA_BR",
     "KM_CALCULADO", "KM_EM_TRECHO_SUSPEITO", "KM_NAO_DETERMINADO", "TOTAL",
     "VIA_NAO_NORMALIZAVEL", "NAO_INFORMADA", "NULL", "NONE", "NAN", "SNV_202607A",
+    "NFKD",  # forma Unicode usada para comparar nomes de campo
 }
 # A varredura precisa de fato enxergar os itens gravados; sem isso, um teste
 # "sem pendencias" passaria tambem com a varredura quebrada.
@@ -312,23 +322,67 @@ checa("particao do mesmo codigo nao e vizinha", alertas["F"], None)
 checa("km com ruido abaixo do metro emenda", alertas["H"], INV)
 checa("trecho recusado no preparo fica sem aviso", alertas["R"], None)
 
+# --- localizacao dos campos pelo nome ---
+R = g["resolver_campo"]
+SNV = [("vl_codigo", ""), ("ds_tipo_ad", ""), ("ds_jurisdi", ""), ("versao_snv", "")]
+# O caso real: o script pedia "Versão SNV" e a camada tem "versao_snv".
+checa("Versão SNV acha versao_snv", R(SNV, "Versão SNV"), "versao_snv")
+checa("nome identico", R(SNV, "versao_snv"), "versao_snv")
+checa("maiusculas", R(SNV, "VERSAO_SNV"), "versao_snv")
+checa("acento decomposto (NFD)",
+      R([("Versa\u0303o SNV", "")], "Versão SNV"), "Versa\u0303o SNV")
+checa("espaco nao separavel", R([("Versão\u00a0SNV", "")], "Versão SNV"), "Versão\u00a0SNV")
+checa("espacos sobrando", R([(" Versão  SNV ", "")], "Versão SNV"), " Versão  SNV ")
+checa("encontrado pelo alias", R([("v_snv", "Versão SNV")], "Versão SNV"), "v_snv")
+checa("ausente", R(SNV, "Extensão (m)"), None)
+checa("nome cortado NAO e aceito", R([("Versão SN", "")], "Versão SNV"), None)
+checa("prefixo NAO e aceito", R([("Código", "")], "Código SNV"), None)
+# Nome identico tem prioridade: nao ha ambiguidade com uma variante de grafia.
+checa("identico vence variante", R([("Km", ""), ("KM", "")], "Km"), "Km")
+try:
+    R([("versao_snv", ""), ("Versão SNV", "")], "VERSAO SNV")
+    raise AssertionError("ambiguidade nao detectada")
+except ValueError:
+    ok += 1
+# Nome real tem prioridade sobre alias de outro campo.
+checa("nome vence alias", R([("a", "versao_snv"), ("versao_snv", "")], "Versão SNV"),
+      "versao_snv")
+
+msg = g["mensagem_campo_ausente"]([("versao_sn", "Versão SNV"), ("vl_codigo", "")],
+                                 ["Versão SNV x"], "SNV_202607A")
+checa("mensagem cita o campo pedido", '"Versão SNV x" nao encontrado em SNV_202607A' in msg, True)
+checa("mensagem sugere o mais parecido", "Mais parecidos: versao_sn" in msg, True)
+checa("mensagem lista campos com alias", "versao_sn (alias: Versão SNV)" in msg, True)
+
 # --- colunas da SGE copiadas para a saida ---
 M = g["indices_mantidos"]
 EXC = g["CAMPOS_OAE_EXCLUIDOS"]
 checa("colunas excluidas sao as pedidas", EXC, ("Km", "Código SNV", "Versão SNV"))
-sge = ["ID", "Km", "Via", "Código SNV", "Extensão (m)", "Versão SNV", "Relacao_SNV"]
+nomes = ["ID", "Km", "Via", "Código SNV", "Extensão (m)", "Versão SNV", "Relacao_SNV"]
+sge = [(n, "") for n in nomes]
 idx, excluidos, ausentes = M(sge, EXC)
-checa("mantem os demais, na ordem original", [sge[i] for i in idx],
+checa("mantem os demais, na ordem original", [nomes[i] for i in idx],
       ["ID", "Via", "Extensão (m)", "Relacao_SNV"])
 checa("informa as excluidas", excluidos, ["Km", "Código SNV", "Versão SNV"])
 checa("nenhuma ausente", ausentes, [])
-# Nome sem acento na SGE nao e retirado, e a falta e informada.
-idx, excluidos, ausentes = M(["ID", "Km", "Codigo SNV"], EXC)
-checa("comparacao exata: sem acento fica", [["ID", "Km", "Codigo SNV"][i] for i in idx],
-      ["ID", "Codigo SNV"])
+# Mesma tolerancia da busca: sem acento ou com "_" tambem sao retiradas.
+nomes2 = ["ID", "KM", "Codigo SNV", "versao_snv"]
+idx, excluidos, ausentes = M([(n, "") for n in nomes2], EXC)
+checa("grafia diferente tambem e retirada", [nomes2[i] for i in idx], ["ID"])
+checa("nomes reais retirados", excluidos, ["KM", "Codigo SNV", "versao_snv"])
+# Ausente e informada; nada e retirado por engano.
+idx, excluidos, ausentes = M([("ID", ""), ("Km", "")], EXC)
 checa("ausentes informadas", ausentes, ["Código SNV", "Versão SNV"])
+checa("so a encontrada sai", idx, [0])
+# Ambiguidade: nada e retirado e o nome e informado.
+idx, excluidos, ausentes = M([("Km", "x"), ("km_", "Km")], ("Km",))
+checa("identico resolve sem ambiguidade", excluidos, ["Km"])
+idx, excluidos, ausentes = M([("KM", ""), ("km", "")], ("Km",))
+checa("ambiguo: nada retirado", (idx, excluidos, ausentes), ([0, 1], [], ["Km"]))
 # Campos usados pelo script nunca sao retirados.
 for usado in ("Extensão (m)", "Via", "Relacao_SNV"):
-    checa(f"{usado} nao e excluido", usado in EXC, False)
+    checa(f"{usado} nao e excluido",
+          any(g["normalizar_nome_campo"](usado) == g["normalizar_nome_campo"](e) for e in EXC),
+          False)
 
 print(f"{ok} verificacoes OK")

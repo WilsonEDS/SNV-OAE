@@ -36,7 +36,12 @@ em `NOME_CAMADA_OAE` e `NOME_CAMADA_SNV`.
 | Camada | Geometria | Campos obrigatórios |
 |---|---|---|
 | **SGE** (OAEs) | pontual | `Extensão (m)`, `Via`, `Relacao_SNV` |
-| **SNV** (rodovias) | linear (`LineString`) | `vl_codigo`, `vl_km_inic`, `vl_km_fina`, `ds_tipo_ad`, `ds_jurisdi`, `Versão SNV` |
+| **SNV** (rodovias) | linear (`LineString`) | `vl_codigo`, `vl_km_inic`, `vl_km_fina`, `ds_tipo_ad`, `ds_jurisdi`, `versao_snv` |
+
+Os nomes de campo são localizados sem distinguir acento, maiúsculas, `_` ou
+espaços, e também pelo alias exibido na tabela de atributos: `Versão SNV` e
+`versao_snv` são o mesmo campo. Se um campo obrigatório não for encontrado, a
+mensagem de erro lista os campos da camada e os mais parecidos.
 
 A extensão da OAE serve apenas para dimensionar o raio de busca — nunca para
 decidir o trecho. Cada trecho SNV deve estar digitalizado no sentido crescente
@@ -50,7 +55,7 @@ seguidos de doze campos criados, nesta ordem:
 | Campo | Tipo | Conteúdo |
 |---|---|---|
 | `Trecho_SNV` | texto | `vl_codigo` selecionado, ou NULL |
-| `Versao_SNV` | texto | `Versão SNV` do trecho atribuído — com qual versão da SNV o km foi calculado |
+| `Versao_SNV` | texto | `versao_snv` do trecho atribuído — com qual versão da SNV o km foi calculado |
 | `Administracao` | texto | `ds_tipo_ad` do trecho atribuído, ou NULL |
 | `Jurisdicao` | texto | `ds_jurisdi` do trecho atribuído, ou NULL |
 | `km_SNV` | real | quilômetro interpolado, ou NULL |
