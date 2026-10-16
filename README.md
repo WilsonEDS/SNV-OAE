@@ -112,6 +112,26 @@ O km fica NULL, com a causa registrada em `Obs_SNV`, quando:
 
 Uma `MultiLineString` com uma única parte é aceita e usada como está.
 
+### Coerência com a SNV e aviso de sentido suspeito
+
+O km é coerente com a **geometria do trecho atribuído**. Se a SNV estiver
+errada, o km acompanha o erro; corrigida a SNV, uma nova execução corrige o km.
+
+Para que esses erros não passem em silêncio, cada trecho é comparado com a
+sequência de km dos vizinhos da mesma BR: o vizinho anterior deveria tocar o
+primeiro vértice e o posterior, o último. Quando isso não acontece, `Obs_SNV`
+recebe um aviso, **e o km continua sendo calculado pela geometria**:
+
+| Aviso | Situação |
+|---|---|
+| `TRECHO_SNV_POSSIVELMENTE_INVERTIDO` | os vizinhos estão no extremo oposto ao esperado — o km sai espelhado dentro do trecho |
+| `TRECHO_SNV_CONTINUIDADE_CONTRADITORIA` | anterior e posterior tocam o mesmo extremo |
+
+Vizinhos são trechos da mesma BR (prefixo do `vl_codigo`), com outro código,
+cujo km de emenda coincide ao metro e cujos extremos estão a até 1 m. Trecho
+sem vizinho não tem com o que ser comparado e não recebe aviso. O resumo do
+console mostra quantos trechos e quantas OAEs foram sinalizados.
+
 ## Como executar
 
 1. Carregue as camadas SGE e SNV no projeto QGIS.
@@ -130,6 +150,7 @@ Todos no início do arquivo:
 | `CRS_METRICA` | EPSG:5880 | SRC de todas as medições |
 | `FATOR_RAIO` | 2.0 | multiplicador do raio de busca |
 | `TOLERANCIA_EMPATE_DISTANCIA_M` | 1e-8 | tolerância numérica de equidistância |
+| `TOLERANCIA_CONEXAO_M` | 1.0 | distância máxima entre extremos de trechos vizinhos (só no aviso de sentido) |
 | `DISTANCIA_MAXIMA_ASSOCIACAO_M` | `None` | limite duro opcional de associação (desativado) |
 
 O raio de busca de cada OAE é `max(extensão, mediana das extensões) ×
@@ -142,11 +163,12 @@ As funções sem dependência do QGIS são extraídas do script e exercitadas fo
 do ambiente QGIS:
 
 ```bash
-python3 testes/teste_funcoes_puras.py     # 51 verificações
+python3 testes/teste_funcoes_puras.py     # 75 verificações
 python3 testes/teste_classificacao.py     # 66 verificações
 ```
 
-Cobrem a normalização de dados, o preparo dos trechos e a interpolação do km,
+Cobrem a normalização de dados, o preparo dos trechos, a interpolação do km e
+o aviso de sentido suspeito,
 os seis critérios e
 as invariantes do procedimento — entre elas a compatibilidade obrigatória com a
 `Via` e a independência do resultado frente à ordem de leitura das feições.
@@ -158,10 +180,11 @@ as invariantes do procedimento — entre elas a compatibilidade obrigatória com
 - **A compatibilidade compara apenas o número da BR**, não a UF embutida no
   `vl_codigo`. Em divisas estaduais, um trecho da mesma BR em UF vizinha é
   candidato válido.
-- **O sentido do km depende da digitalização.** Um trecho eventualmente
-  digitalizado contra o km produz km espelhado dentro do trecho
-  (`vl_km_inic + vl_km_fina − km correto`), sem aviso. Vale conferir por
-  amostragem em OAEs com marco quilométrico conhecido.
+- **O sentido do km depende da digitalização.** Um trecho digitalizado contra
+  o km produz km espelhado dentro do trecho
+  (`vl_km_inic + vl_km_fina − km correto`). O caso é sinalizado em `Obs_SNV`
+  quando os vizinhos o evidenciam; um trecho isolado, sem vizinhos, passa sem
+  aviso.
 - **A interpolação pressupõe proporcionalidade** entre comprimento geométrico e
   quilometragem declarada. Desvios acima de 10% são sinalizados em `Obs_SNV`.
 - **A detecção de coincidência espelha o critério.** Rodovias coincidentes com

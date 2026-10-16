@@ -89,6 +89,10 @@
 #   CRS_METRICA                 : SRC metrico usado em TODAS as medicoes.
 #   FATOR_RAIO                  : multiplicador do raio de busca.
 #   TOLERANCIA_EMPATE_DISTANCIA_M : tolerancia numerica de equidistancia.
+#   TOLERANCIA_CONEXAO_M        : distancia maxima entre extremos de trechos
+#                                 vizinhos (so no aviso de sentido suspeito).
+#   CASAS_DECIMAIS_KM           : precisao da comparacao do km de emenda entre
+#                                 vizinhos (so no aviso de sentido suspeito).
 #   DISTANCIA_MAXIMA_ASSOCIACAO_M : limite duro opcional de associacao (None =
 #                                 desativado; ver secao "PARAMETROS EM AVALIACAO").
 #
@@ -160,8 +164,16 @@
 #       - a geometria tem duas ou mais partes - juntar partes pode inverter a
 #         ordem dos vertices e, com ela, o sentido;
 #       - a projecao falha.
-#     Risco assumido: um trecho eventualmente digitalizado CONTRA o km produz
-#     km espelhado dentro do trecho (ki + kf - km correto), sem aviso.
+#     Principio: o km e coerente com a GEOMETRIA do trecho atribuido. Se a SNV
+#     estiver errada, o km acompanha o erro; corrigida a SNV, nova execucao
+#     corrige o km.
+#     Aviso (so diagnostico, nunca altera o km): cada trecho e comparado com a
+#     sequencia de km dos vizinhos da mesma BR. Se o vizinho anterior toca o
+#     ultimo vertice, ou o posterior toca o primeiro, Obs_SNV recebe
+#     TRECHO_SNV_POSSIVELMENTE_INVERTIDO; se os dois tocam o mesmo extremo,
+#     TRECHO_SNV_CONTINUIDADE_CONTRADITORIA. Nesses trechos o km sai espelhado
+#     (ki + kf - km correto). Trecho sem vizinhos nao tem com o que ser
+#     comparado e, se invertido, passa sem aviso.
 #
 #
 # 6. GARANTIAS DE DETERMINISMO
@@ -251,6 +263,15 @@ CRS_METRICA = QgsCoordinateReferenceSystem("EPSG:5880")
 FATOR_RAIO = 2.0
 
 TOLERANCIA_EMPATE_DISTANCIA_M = 1e-8
+
+# Usadas APENAS no aviso de trecho com sentido suspeito: nunca alteram o km.
+# Distancia maxima entre extremos para considerar dois trechos conectados. A
+# publicacao revisada apresentou as mesmas conexoes entre 1 e 20 metros; um
+# metro basta e evita ligar trechos que apenas passam perto.
+TOLERANCIA_CONEXAO_M = 1.0
+# Precisao com que o km de emenda de dois trechos vizinhos e comparado: o SNV
+# publica km com 3 casas decimais, isto e, ao metro.
+CASAS_DECIMAIS_KM = 3
 
 # Alerta de auditoria (nao altera o calculo): razao entre o comprimento
 # geometrico do trecho e a extensao declarada (vl_km_fina - vl_km_inic).
@@ -1123,13 +1144,15 @@ def preparar_trechos(snv_por_id):
         snv_por_id: dict fid -> QgsFeature da copia metrica da SNV.
 
     Retorna:
-        dict fid -> {"linha", "ki", "kf", "erro"}
+        dict fid -> {"linha", "ki", "kf", "erro", "alerta_sentido"}
         erro: None quando o trecho e apto; senao a causa que impede o km.
+        alerta_sentido: preenchido depois, por diagnosticar_trechos.
 
     Hipoteses metodologicas:
         - O sentido do km e o sentido de digitalizacao da LineString (ver
-          preparar_linha). Nao ha consulta a trechos vizinhos nem a outros
-          atributos: o trecho e autossuficiente.
+          preparar_linha). O km nao depende de trechos vizinhos nem de outros
+          atributos: o trecho e autossuficiente. Os vizinhos so sao
+          consultados, a parte, para AVISAR de sentido suspeito.
         - O preparo e propriedade do TRECHO, nao da OAE, e por isso ocorre uma
           unica vez, antes do laco das OAEs.
 
@@ -1149,14 +1172,129 @@ def preparar_trechos(snv_por_id):
             erro = "INTERVALO_KM_INVALIDO"
         else:
             linha, erro = preparar_linha(feicao.geometry())
-        preparados[fid] = {"linha": linha, "ki": ki, "kf": kf, "erro": erro}
+        preparados[fid] = {"linha": linha, "ki": ki, "kf": kf, "erro": erro,
+                           "alerta_sentido": None}
     return preparados
+
+
+
+def diagnosticar_sentido(extremos, anteriores, posteriores):
+    """Avalia se a digitalizacao de um trecho contradiz a sequencia de km da SNV.
+
+    Parametros:
+        extremos: ((x, y) do primeiro vertice, (x, y) do ultimo vertice).
+        anteriores: extremos dos vizinhos cujo vl_km_fina e igual ao vl_km_inic
+            do trecho avaliado.
+        posteriores: extremos dos vizinhos cujo vl_km_inic e igual ao
+            vl_km_fina do trecho avaliado.
+
+    Retorna:
+        None quando nao ha erro detectavel, ou um dos avisos:
+        "TRECHO_SNV_POSSIVELMENTE_INVERTIDO" - os vizinhos indicam que o km
+            cresce no sentido oposto ao da digitalizacao;
+        "TRECHO_SNV_CONTINUIDADE_CONTRADITORIA" - anterior e posterior tocam o
+            MESMO extremo, o que nenhuma digitalizacao explica.
+
+    Hipoteses metodologicas:
+        - E SO DIAGNOSTICO. O km continua sendo calculado pela geometria; o
+          aviso apenas registra que a SNV parece incoerente naquele trecho,
+          para que seja revisada.
+        - Pela digitalizacao, o vizinho anterior deveria tocar o PRIMEIRO
+          vertice e o posterior, o ULTIMO. Usa-se apenas o extremo do trecho
+          AVALIADO que cada vizinho toca: nada se presume sobre o sentido do
+          vizinho, que tambem pode estar invertido.
+        - Ausencia de evidencia nao e erro. Sem vizinho, com vizinho tocando os
+          dois extremos (anel, retorno) ou com vizinhos do mesmo lado em
+          extremos diferentes, aquele lado nao conta. Funcao independente do
+          QGIS, para poder ser testada isoladamente.
+    """
+    def extremo_tocado(vizinhos):
+        """Indice (0 ou 1) do extremo tocado pelos vizinhos de um lado, ou None."""
+        tocados = set()
+        for extremos_vizinho in vizinhos:
+            indices = {
+                i for i, ponto in enumerate(extremos)
+                for ponto_vizinho in extremos_vizinho
+                if math.dist(ponto, ponto_vizinho) <= TOLERANCIA_CONEXAO_M
+            }
+            if len(indices) > 1:
+                return None
+            tocados |= indices
+        return next(iter(tocados)) if len(tocados) == 1 else None
+
+    # True = o vizinho confirma a digitalizacao; False = a contradiz.
+    votos = []
+    anterior = extremo_tocado(anteriores)
+    posterior = extremo_tocado(posteriores)
+    if anterior is not None:
+        votos.append(anterior == 0)
+    if posterior is not None:
+        votos.append(posterior == 1)
+    if not votos or all(votos):
+        return None
+    if not any(votos):
+        return "TRECHO_SNV_POSSIVELMENTE_INVERTIDO"
+    return "TRECHO_SNV_CONTINUIDADE_CONTRADITORIA"
+
+
+def diagnosticar_trechos(preparados, snv_por_id):
+    """Grava em cada trecho apto o aviso de sentido suspeito, se houver.
+
+    Parametros:
+        preparados: resultado de preparar_trechos (alterado no lugar).
+        snv_por_id: dict fid -> QgsFeature da copia metrica da SNV.
+
+    Hipoteses metodologicas:
+        - Vizinhos sao trechos da MESMA BR (prefixo do vl_codigo), com
+          vl_codigo diferente, cujo km de emenda coincide ao metro
+          (CASAS_DECIMAIS_KM). O prefixo do codigo dispensa exigir vl_br, sg_uf
+          e sg_tipo_tr. Uma falsa vizinhanca entre UFs exigiria km iguais ao
+          metro e extremos a ate TOLERANCIA_CONEXAO_M, o que e improvavel.
+        - Feicoes de mesmo vl_codigo sao particoes do proprio trecho, e nao
+          vizinhos capazes de testemunhar seu sentido.
+        - So trechos aptos entram, como avaliados e como vizinhos: sem linha de
+          parte unica nao ha primeiro e ultimo vertice confiaveis.
+    """
+    dados = {}
+    por_inicio = {}
+    por_final = {}
+    for fid, registro in preparados.items():
+        if registro["erro"] or registro["linha"] is None:
+            continue
+        vertices = registro["linha"].asPolyline()
+        codigo = codigo_valido(snv_por_id[fid][CAMPO_VL_CODIGO])
+        rodovia = prefixo_codigo(codigo)
+        if len(vertices) < 2 or rodovia is None:
+            continue
+        extremos = ((vertices[0].x(), vertices[0].y()),
+                    (vertices[-1].x(), vertices[-1].y()))
+        dados[fid] = (codigo, rodovia, extremos)
+        ki = round(registro["ki"], CASAS_DECIMAIS_KM)
+        kf = round(registro["kf"], CASAS_DECIMAIS_KM)
+        por_inicio.setdefault((rodovia, ki), []).append(fid)
+        por_final.setdefault((rodovia, kf), []).append(fid)
+
+    for fid, (codigo, rodovia, extremos) in dados.items():
+        registro = preparados[fid]
+        ki = round(registro["ki"], CASAS_DECIMAIS_KM)
+        kf = round(registro["kf"], CASAS_DECIMAIS_KM)
+        anteriores = [dados[f][2] for f in por_final.get((rodovia, ki), [])
+                      if dados[f][0] != codigo]
+        posteriores = [dados[f][2] for f in por_inicio.get((rodovia, kf), [])
+                       if dados[f][0] != codigo]
+        registro["alerta_sentido"] = diagnosticar_sentido(
+            extremos, anteriores, posteriores)
 
 
 print("Preparando os trechos SNV...")
 snv_preparada = preparar_trechos(snv_por_id)
+diagnosticar_trechos(snv_preparada, snv_por_id)
 resumo_trechos = Counter(
     registro["erro"] or "APTO_AO_CALCULO_DO_KM" for registro in snv_preparada.values()
+)
+resumo_alertas_sentido = Counter(
+    registro["alerta_sentido"] for registro in snv_preparada.values()
+    if registro["alerta_sentido"]
 )
 
 
@@ -1313,6 +1451,7 @@ contagem.update(
         "COINCIDENCIA_DETECTADA": 0,
         "COINCIDENCIA_MESMA_BR": 0,
         "ATRIBUTO_TRECHO_DIVERGENTE": 0,
+        "KM_EM_TRECHO_SUSPEITO": 0,
     }
 )
 
@@ -1508,6 +1647,11 @@ for oae in camada_oae.getFeatures():
         novas_feicoes.append(nova)
         continue
 
+    # Aviso de sentido suspeito do trecho (diagnosticar_trechos). So entra na
+    # observacao: o km abaixo e calculado pela geometria, com ou sem aviso, e
+    # permanece coerente com o trecho tal como esta publicado na SNV.
+    alerta_sentido = preparo["alerta_sentido"]
+
     resultado_km = calcular_km(
         geom_oae_metrica,
         linha,
@@ -1516,7 +1660,7 @@ for oae in camada_oae.getFeatures():
     )
     if resultado_km is None:
         nova.setAttribute(idx_observacao, observacao_texto(
-            "FALHA_NA_PROJECAO_OU_INTERPOLACAO", observacao))
+            alerta_sentido, "FALHA_NA_PROJECAO_OU_INTERPOLACAO", observacao))
         contagem["KM_NAO_DETERMINADO"] += 1
         motivos_km_nulo["FALHA_NA_PROJECAO_OU_INTERPOLACAO"] += 1
         novas_feicoes.append(nova)
@@ -1544,8 +1688,12 @@ for oae in camada_oae.getFeatures():
     if alerta_extremo:
         contagem["ALERTA_EXTREMO"] += 1
 
+    if alerta_sentido:
+        contagem["KM_EM_TRECHO_SUSPEITO"] += 1
+
     nova.setAttribute(idx_km, round(resultado_km["km"], 3))
     nova.setAttribute(idx_observacao, observacao_texto(
+        alerta_sentido,
         alerta_escala,
         alerta_extremo,
         f"FRACAO={resultado_km['fracao']:.6f}",
@@ -1616,6 +1764,8 @@ print(f"km_SNV nao aplicavel (sem trecho):     {sem_associacao}")
 print(f"Conferencia geral: {soma_km} + {sem_associacao} = {contagem['TOTAL']}")
 print(f"km com alerta de escala (>{TOLERANCIA_ESCALA_KM_GEOM:.0%}):     {contagem['ALERTA_ESCALA']}")
 print(f"km com projecao no extremo do trecho:  {contagem['ALERTA_EXTREMO']}")
+print(f"km em trecho SNV com sentido suspeito: {contagem['KM_EM_TRECHO_SUSPEITO']}"
+      " (calculado pela geometria; ver Obs_SNV)")
 print("=" * 72)
 print()
 print("RESUMO - OAEs sobre rodovias coincidentes")
@@ -1634,6 +1784,10 @@ print(f"  APTO_AO_CALCULO_DO_KM: {resumo_trechos['APTO_AO_CALCULO_DO_KM']}")
 for situacao in sorted(set(resumo_trechos) - {"APTO_AO_CALCULO_DO_KM"}):
     print(f"  {situacao}: {resumo_trechos[situacao]}")
 print(f"Total de feicoes SNV avaliadas: {sum(resumo_trechos.values())}")
+print("  Avisos de sentido (so diagnostico, o km nao e alterado):")
+for alerta in ("TRECHO_SNV_POSSIVELMENTE_INVERTIDO",
+               "TRECHO_SNV_CONTINUIDADE_CONTRADITORIA"):
+    print(f"    {alerta}: {resumo_alertas_sentido[alerta]}")
 print(f"SNV excluidas por geometria/reprojecao: {snv_descartadas_geometria}")
 print()
 print("PARAMETROS DESTA EXECUCAO")

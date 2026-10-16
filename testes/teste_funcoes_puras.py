@@ -8,8 +8,11 @@ linhas = fonte.splitlines(True)
 alvos = {"numero_finito_positivo", "numero_finito", "normalizar_via",
          "prefixo_codigo", "quase_igual", "formatar_lista_codigos",
          "truncar_texto", "observacao_texto", "interpolar_km",
-         "preparar_trechos"}
-consts = {"TAMANHO_MAX_OBS", "LIMITE_CODIGOS_LISTADOS", "CAMPO_VL_KM_INIC",
+         "preparar_trechos", "diagnosticar_sentido",
+         "diagnosticar_trechos", "prefixo_codigo"}
+consts = {"TAMANHO_MAX_OBS", "LIMITE_CODIGOS_LISTADOS", "TOLERANCIA_CONEXAO_M",
+          "CASAS_DECIMAIS_KM", "CAMPO_VL_CODIGO",
+          "CAMPO_VL_KM_INIC",
           "CAMPO_VL_KM_FINA"}
 
 ns = {"math": math, "re": re, "NULL": object()}
@@ -113,5 +116,101 @@ for fid in (2, 3, 4, 5):
 checa("trecho a partir do km 0 e apto", r[6]["erro"], None)
 checa("multiparte recusado", r[7]["erro"], "GEOMETRIA_SNV_MULTIPARTE")
 checa("intervalo avaliado antes da geometria", r[8]["erro"], "INTERVALO_KM_INVALIDO")
+
+# --- aviso de sentido suspeito (so diagnostico) ---
+D = g["diagnosticar_sentido"]
+INV = "TRECHO_SNV_POSSIVELMENTE_INVERTIDO"
+CON = "TRECHO_SNV_CONTINUIDADE_CONTRADITORIA"
+# Trecho avaliado: primeiro vertice em (0,0), ultimo em (1000,0).
+E = ((0.0, 0.0), (1000.0, 0.0))
+TOCA_INICIO = ((-500.0, 0.0), (0.0, 0.0))       # vizinho com extremo no 1o vertice
+TOCA_FIM = ((1000.0, 0.0), (1500.0, 0.0))       # vizinho com extremo no ultimo
+TOCA_INICIO_INVERTIDO = ((0.0, 0.0), (-500.0, 0.0))  # sentido do vizinho e irrelevante
+
+# Digitalizacao confirmada -> sem aviso.
+checa("confirmado pelo anterior", D(E, [TOCA_INICIO], []), None)
+checa("confirmado pelo posterior", D(E, [], [TOCA_FIM]), None)
+checa("confirmado por ambos", D(E, [TOCA_INICIO], [TOCA_FIM]), None)
+checa("vizinho invertido nao importa", D(E, [TOCA_INICIO_INVERTIDO], []), None)
+
+# Vizinhos no extremo oposto -> trecho possivelmente invertido.
+checa("invertido pelo anterior", D(E, [TOCA_FIM], []), INV)
+checa("invertido pelo posterior", D(E, [], [TOCA_INICIO]), INV)
+checa("invertido por ambos", D(E, [TOCA_FIM], [TOCA_INICIO]), INV)
+
+# Anterior e posterior no mesmo extremo -> continuidade contraditoria.
+checa("contraditorio no 1o vertice", D(E, [TOCA_INICIO], [TOCA_INICIO]), CON)
+checa("contraditorio no ultimo vertice", D(E, [TOCA_FIM], [TOCA_FIM]), CON)
+
+# Ausencia de evidencia nao e erro.
+checa("sem vizinhos", D(E, [], []), None)
+checa("vizinho que nao toca", D(E, [((5000.0, 0.0), (6000.0, 0.0))], []), None)
+ANEL = ((0.0, 0.0), (1000.0, 0.0))              # toca os dois extremos
+checa("vizinho tocando os dois extremos", D(E, [ANEL], []), None)
+checa("vizinhos do mesmo lado em extremos diferentes",
+      D(E, [TOCA_INICIO, TOCA_FIM], []), None)
+# Lado ambiguo nao anula o outro lado.
+checa("lado ambiguo + lado que inverte", D(E, [ANEL], [TOCA_INICIO]), INV)
+
+# Limiar de conexao (1,0 m).
+checa("conexao a 0,99 m conta", D(E, [((-500.0, 0.0), (1000.99, 0.0))], []), INV)
+checa("conexao a 1,01 m nao conta", D(E, [((-500.0, 0.0), (1001.01, 0.0))], []), None)
+
+# Independencia da ordem dos vizinhos.
+checa("ordem dos vizinhos irrelevante",
+      D(E, [TOCA_FIM, ((5000.0, 0.0), (6000.0, 0.0))], []),
+      D(E, [((5000.0, 0.0), (6000.0, 0.0)), TOCA_FIM], []))
+
+# --- busca de vizinhos do aviso (geometria simulada) ---
+class Ponto:
+    def __init__(self, x, y): self._x, self._y = x, y
+    def x(self): return self._x
+    def y(self): return self._y
+
+class Linha:
+    """Simula QgsGeometry de parte unica: so asPolyline() e usado."""
+    def __init__(self, *coords): self._pts = [Ponto(*c) for c in coords]
+    def asPolyline(self): return self._pts
+
+def trecho(codigo, ki, kf, *coords):
+    return {"codigo": codigo, "registro": {"linha": Linha(*coords), "ki": ki, "kf": kf,
+                                           "erro": None, "alerta_sentido": None}}
+
+# Cada cenario usa km e posicoes proprios; em cada um, a regra testada
+# muda o resultado (sem ela, o aviso esperado nao sairia, ou sairia indevido).
+malha = {
+    # 1) BR-116: A (0-10) e C (20-30) corretos; B (10-20) digitalizado AO CONTRARIO.
+    "A": trecho("116BMG0010", 0.0, 10.0, (0, 0), (10000, 0)),
+    "B": trecho("116BMG0020", 10.0, 20.0, (20000, 0), (10000, 0)),
+    "C": trecho("116BMG0030", 20.0, 30.0, (20000, 0), (30000, 0)),
+    # 2) BR-101 sobre as mesmas emendas, digitalizada contra os trechos da 116.
+    #    So nao recebe aviso porque vizinhos precisam ser da MESMA BR.
+    "D": trecho("101BMG0010", 10.0, 20.0, (20000, 0), (10000, 0)),
+    # 3) Duas feicoes do MESMO codigo: F so nao recebe aviso porque E, sendo
+    #    particao do proprio trecho, nao conta como vizinho.
+    "E": trecho("116BMG0050", 50.0, 60.0, (50000, 0), (60000, 0)),
+    "F": trecho("116BMG0050", 60.0, 62.0, (62000, 0), (60000, 0)),
+    # 4) km com ruido abaixo do metro dos dois lados da emenda (79.9996 e
+    #    80.0004, ambos 80.000 ao metro): H, invertido, so e detectado porque a
+    #    emenda e comparada ao metro.
+    "G": trecho("116BMG0070", 70.0, 79.9996, (70000, 0), (80000, 0)),
+    "H": trecho("116BMG0080", 80.0004, 90.0, (90000, 0), (80000, 0)),
+}
+preparados = {fid: d["registro"] for fid, d in malha.items()}
+feicoes = {fid: {"vl_codigo": d["codigo"]} for fid, d in malha.items()}
+# 5) Trecho recusado no preparo nao e avaliado nem serve de vizinho.
+preparados["R"] = {"linha": None, "ki": 0.0, "kf": 1.0,
+                   "erro": "GEOMETRIA_SNV_MULTIPARTE", "alerta_sentido": None}
+feicoes["R"] = {"vl_codigo": "116BMG0099"}
+g["diagnosticar_trechos"](preparados, feicoes)
+alertas = {fid: r["alerta_sentido"] for fid, r in preparados.items()}
+
+checa("A correto, apesar de B invertido", alertas["A"], None)
+checa("B invertido detectado", alertas["B"], INV)
+checa("C correto", alertas["C"], None)
+checa("outra BR nao e vizinha", alertas["D"], None)
+checa("particao do mesmo codigo nao e vizinha", alertas["F"], None)
+checa("km com ruido abaixo do metro emenda", alertas["H"], INV)
+checa("trecho recusado no preparo fica sem aviso", alertas["R"], None)
 
 print(f"{ok} verificacoes OK")
