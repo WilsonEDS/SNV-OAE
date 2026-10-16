@@ -74,7 +74,7 @@ Reproduz a fórmula da planilha de conferência:
        E(Criterio="TRECHO_COINCIDENTE"; Qtd_Codigos<3)); "VALIDADO"; "A VALIDAR")
 ```
 
-`Validado` quando a OAE é de **único trecho** e `Relacao_SNV` = `L`, ou de
+`Validado` quando a OAE é de **trecho único** e `Relacao_SNV` = `L`, ou de
 **trecho coincidente** com menos de três códigos no raio; `A validar` em todos
 os demais casos. A comparação com `L` ignora maiúsculas e espaços nas bordas —
 neste último ponto difere do Excel, que considera `" L"` diferente de `"L"`.
@@ -96,7 +96,7 @@ Mutuamente exclusivos e exaustivos, avaliados **nesta ordem**:
 | Critério | Condição |
 |---|---|
 | Sem trecho | geometria da OAE inválida, ou nenhum `vl_codigo` válido dentro do raio |
-| Único trecho | exatamente um código no raio, **e** compatível com a `Via` |
+| Trecho único | exatamente um código no raio, **e** compatível com a `Via` |
 | Trecho divergente | nenhum código do raio é compatível com a `Via`, ou a `Via` está ausente |
 | Trecho empate | dois ou mais códigos compatíveis à **mesma distância** da OAE |
 | Trecho coincidente | vencedor único que compartilha porção linear local com outro código equidistante |

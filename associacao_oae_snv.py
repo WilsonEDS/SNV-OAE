@@ -73,10 +73,10 @@
 #                            nao aparecem aqui.
 #       Status      (texto)  "Validado" ou "A validar", pela formula da planilha
 #                            de conferencia (ver status_validacao): Validado se
-#                            (Unico trecho e Relacao_SNV = "L") ou (Trecho
+#                            (Trecho unico e Relacao_SNV = "L") ou (Trecho
 #                            coincidente e Qtd_Codigos < 3). Nunca NULL.
 #       Criterio    (texto)  um dos seis criterios da secao 5, em texto
-#                            legivel (ex.: "Único trecho").
+#                            legivel (ex.: "Trecho único").
 #       Obs_SNV     (texto)  trilha de rastreabilidade em texto legivel:
 #                            distancias, margens, codigos concorrentes, causas
 #                            de empate, de nao associacao e de km indeterminado,
@@ -556,7 +556,7 @@ def observacao_texto(*partes):
 
 TEXTO_CRITERIO = {
     "SEM_TRECHO": "Sem trecho",
-    "UNICO_TRECHO": "Único trecho",
+    "UNICO_TRECHO": "Trecho único",
     "TRECHO_DIVERGENTE": "Trecho divergente",
     "TRECHO_EMPATE": "Trecho empate",
     "TRECHO_COINCIDENTE": "Trecho coincidente",
@@ -670,7 +670,7 @@ def texto_saida_obs(observacao):
 
 
 def texto_saida_criterio(criterio):
-    """Texto legivel do criterio para a camada de saida (ex.: "Único trecho")."""
+    """Texto legivel do criterio para a camada de saida (ex.: "Trecho único")."""
     if not isinstance(criterio, str) or not criterio:
         return None
     return TEXTO_CRITERIO.get(criterio) or texto_generico(criterio)

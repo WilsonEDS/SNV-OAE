@@ -92,7 +92,7 @@ checa("obs truncada no limite", len(longa), g["TAMANHO_MAX_OBS"])
 checa("marcador em minusculas", longa.endswith("...[truncado]"), True)
 
 C = g["texto_saida_criterio"]
-for codigo, texto in [("SEM_TRECHO", "Sem trecho"), ("UNICO_TRECHO", "Único trecho"),
+for codigo, texto in [("SEM_TRECHO", "Sem trecho"), ("UNICO_TRECHO", "Trecho único"),
                       ("TRECHO_DIVERGENTE", "Trecho divergente"),
                       ("TRECHO_EMPATE", "Trecho empate"),
                       ("TRECHO_COINCIDENTE", "Trecho coincidente"),
@@ -164,7 +164,7 @@ checa("L so vale para unico trecho", S("TRECHO_FRONTEIRA", "L", 1), AV)
 checa("poucos codigos so vale para coincidente", S("TRECHO_FRONTEIRA", None, 1), AV)
 for criterio in ("SEM_TRECHO", "TRECHO_DIVERGENTE", "TRECHO_EMPATE"):
     checa(f"{criterio} -> a validar", S(criterio, "L", 0), AV)
-checa("compara codigo interno, nao texto exibido", S("Único trecho", "L", 1), AV)
+checa("compara codigo interno, nao texto exibido", S("Trecho único", "L", 1), AV)
 
 # --- interpolacao do km pelo sentido de digitalizacao ---
 I = g["interpolar_km"]
