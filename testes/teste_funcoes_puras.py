@@ -7,8 +7,10 @@ linhas = fonte.splitlines(True)
 
 alvos = {"numero_finito_positivo", "numero_finito", "normalizar_via",
          "prefixo_codigo", "quase_igual", "formatar_lista_codigos",
-         "truncar_texto", "observacao_texto", "resolver_orientacao"}
-consts = {"TOLERANCIA_CONEXAO_M", "TAMANHO_MAX_OBS", "LIMITE_CODIGOS_LISTADOS"}
+         "truncar_texto", "observacao_texto", "interpolar_km",
+         "preparar_trechos"}
+consts = {"TAMANHO_MAX_OBS", "LIMITE_CODIGOS_LISTADOS", "CAMPO_VL_KM_INIC",
+          "CAMPO_VL_KM_FINA"}
 
 ns = {"math": math, "re": re, "NULL": object()}
 trechos = []
@@ -64,54 +66,52 @@ assert longo.endswith("...[TRUNCADO]")
 checa("obs vazia", g["observacao_texto"](None, ""), None)
 checa("obs ordem", g["observacao_texto"]("A", None, "B"), "A; B")
 
-# --- resolver_orientacao ---
-R = g["resolver_orientacao"]
-A, B = (0.0, 0.0), (1000.0, 0.0)          # trecho avaliado: extremo0=A, extremo1=B
-ANT = ((-500.0, 0.0), (0.0, 0.0))          # vizinho anterior toca A
-POS = ((1000.0, 0.0), (1500.0, 0.0))       # vizinho posterior toca B
+# --- interpolacao do km pelo sentido de digitalizacao ---
+I = g["interpolar_km"]
+# Trecho do km 100,000 ao km 112,000, digitalizado no sentido crescente.
+checa("fracao 0 -> km inicial (primeiro vertice)", I(100.0, 112.0, 0.0), 100.0)
+checa("fracao 1 -> km final (ultimo vertice)", I(100.0, 112.0, 1.0), 112.0)
+checa("fracao 0,5 -> meio do trecho", I(100.0, 112.0, 0.5), 106.0)
+checa("fracao 0,25", I(100.0, 112.0, 0.25), 103.0)
+# Trecho iniciado no km 0.
+checa("trecho a partir do km 0", I(0.0, 8.4, 0.5), 4.2)
+# A fracao e limitada a [0, 1]: nenhum km fora do intervalo do trecho.
+checa("fracao negativa limitada a 0", I(100.0, 112.0, -0.3), 100.0)
+checa("fracao acima de 1 limitada a 1", I(100.0, 112.0, 1.7), 112.0)
+# Monotonia: avancar ao longo da linha nunca diminui o km.
+kms = [I(100.0, 112.0, f / 100) for f in range(101)]
+checa("km cresce ao longo da digitalizacao", kms == sorted(kms), True)
+checa("km sempre dentro do intervalo", all(100.0 <= k <= 112.0 for k in kms), True)
 
-r = R((A, B), [(1, "ANT1", ANT)], [])
-checa("so anterior -> sentido", r["sentido"], "INICIO_GEOM_KM_INIC")
-checa("so anterior -> evidencia", r["evidencia"], "ANTERIOR")
-checa("so anterior -> codigo", r["anterior"], "ANT1")
+# --- preparo dos trechos SNV (geometria simulada) ---
+class Feicao(dict):
+    """Simula QgsFeature: acesso por campo e geometry()."""
+    def __init__(self, ki, kf, geometria="LINHA"):
+        super().__init__(vl_km_inic=ki, vl_km_fina=kf)
+        self._geometria = geometria
+    def geometry(self):
+        return self._geometria
 
-r = R((A, B), [], [(2, "POS1", POS)])
-checa("so posterior -> sentido", r["sentido"], "INICIO_GEOM_KM_INIC")
-checa("so posterior -> evidencia", r["evidencia"], "POSTERIOR")
-
-r = R((A, B), [(1, "ANT1", ANT)], [(2, "POS1", POS)])
-checa("ambos -> sentido", r["sentido"], "INICIO_GEOM_KM_INIC")
-checa("ambos -> evidencia", r["evidencia"], "AMBOS")
-
-# geometria armazenada ao contrario: extremo0 = B
-r = R((B, A), [(1, "ANT1", ANT)], [(2, "POS1", POS)])
-checa("invertida -> sentido", r["sentido"], "INICIO_GEOM_KM_FINAL")
-
-# sem vizinhos
-checa("sem vizinho", R((A, B), [], [])["motivo"], "SEM_VIZINHO_COMPATIVEL")
-
-# dois anteriores concorrentes
-r = R((A, B), [(1, "X", ANT), (2, "Y", ANT)], [])
-checa("dois anteriores", r["motivo"], "CONEXAO_AMBIGUA")
-
-# vizinho que toca os dois extremos (anel)
-ANEL = ((0.0, 0.0), (1000.0, 0.0))
-checa("anel", R((A, B), [(1, "X", ANEL)], [])["motivo"], "CONEXAO_AMBIGUA")
-
-# anterior e posterior no MESMO extremo -> contradicao
-POS_EM_A = ((0.0, 0.0), (0.0, 900.0))
-checa("conflito", R((A, B), [(1, "X", ANT)], [(2, "Y", POS_EM_A)])["motivo"],
-      "VIZINHOS_CONFLITANTES")
-
-# tolerancia de conexao: 0,99 m conecta; 1,01 m nao
-QUASE = ((-500.0, 0.0), (0.99, 0.0))
-checa("conexao 0,99 m", R((A, B), [(1, "X", QUASE)], [])["sentido"], "INICIO_GEOM_KM_INIC")
-LONGE = ((-500.0, 0.0), (1.01, 0.0))
-checa("conexao 1,01 m", R((A, B), [(1, "X", LONGE)], [])["motivo"], "SEM_VIZINHO_COMPATIVEL")
-
-# independencia da ordem de leitura dos vizinhos
-r1 = R((A, B), [(1, "X", ANT), (2, "Y", ANT)], [])
-r2 = R((A, B), [(2, "Y", ANT), (1, "X", ANT)], [])
-checa("ordem irrelevante", r1, r2)
+# preparar_linha real depende do QGIS; aqui devolve a causa codificada na geometria.
+g["preparar_linha"] = lambda geom: (geom, None) if geom == "LINHA" else (None, geom)
+P = g["preparar_trechos"]
+r = P({
+    1: Feicao(100.0, 112.0),
+    2: Feicao(112.0, 100.0),                      # kf < ki
+    3: Feicao(50.0, 50.0),                        # kf == ki
+    4: Feicao(-1.0, 5.0),                         # ki negativo
+    5: Feicao(None, 5.0),                         # ki ausente
+    6: Feicao(0.0, 3.0),                          # trecho a partir do km 0
+    7: Feicao(10.0, 20.0, "GEOMETRIA_SNV_MULTIPARTE"),
+    8: Feicao(-5.0, 1.0, "GEOMETRIA_SNV_MULTIPARTE"),  # intervalo tem precedencia
+})
+checa("trecho apto", (r[1]["erro"], r[1]["linha"], r[1]["ki"], r[1]["kf"]),
+      (None, "LINHA", 100.0, 112.0))
+for fid in (2, 3, 4, 5):
+    checa(f"intervalo invalido fid {fid}", r[fid]["erro"], "INTERVALO_KM_INVALIDO")
+    checa(f"sem linha quando intervalo invalido fid {fid}", r[fid]["linha"], None)
+checa("trecho a partir do km 0 e apto", r[6]["erro"], None)
+checa("multiparte recusado", r[7]["erro"], "GEOMETRIA_SNV_MULTIPARTE")
+checa("intervalo avaliado antes da geometria", r[8]["erro"], "INTERVALO_KM_INVALIDO")
 
 print(f"{ok} verificacoes OK")

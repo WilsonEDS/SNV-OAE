@@ -13,7 +13,9 @@
 #             explicitamente a impossibilidade de faze-lo.
 #   Etapa 2 - Quilometragem: calcular o quilometro ("km_SNV") da OAE dentro do
 #             trecho selecionado, por interpolacao linear entre "vl_km_inic" e
-#             "vl_km_fina", respeitando o sentido crescente da quilometragem.
+#             "vl_km_fina". O sentido crescente do km e o sentido de
+#             digitalizacao da LineString do trecho: o primeiro vertice e o km
+#             inicial e o ultimo, o km final.
 #
 # O procedimento e DETERMINISTICO: o resultado nao depende da ordem de leitura
 # das feicoes de nenhuma das camadas (ver secao 6 desta descricao).
@@ -30,13 +32,10 @@
 #       - CAMPO_VL_CODIGO   ("vl_codigo")  : codigo do trecho (ex.: 116BMG0450).
 #       - CAMPO_VL_KM_INIC  ("vl_km_inic") : km inicial do trecho.
 #       - CAMPO_VL_KM_FINA  ("vl_km_fina") : km final do trecho.
-#       - CAMPO_BR_SNV      ("vl_br")      : numero da BR.
-#       - CAMPO_UF_SNV      ("sg_uf")      : UF.
-#       - CAMPO_TIPO_SNV    ("sg_tipo_tr") : tipo do trecho.
 #       - CAMPO_ADMIN_SNV   ("ds_tipo_ad") : tipo de administracao do trecho.
 #       - CAMPO_JURIS_SNV   ("ds_jurisdi") : jurisdicao do trecho.
-#         (vl_br + sg_uf + sg_tipo_tr formam a "chave de continuidade": somente
-#          trechos com a mesma chave sao considerados vizinhos entre si.)
+#       - geometria: LineString (ou MultiLineString de uma unica parte)
+#         digitalizada no sentido crescente do km.
 #
 #
 # 3. DADOS DE SAIDA
@@ -76,23 +75,19 @@
 #                            diferenca nao satisfazem a equidistancia exigida e
 #                            nao aparecem aqui.
 #       Criterio    (texto)  um dos seis criterios da secao 5.
-#       Sentido_KM  (texto)  INICIO_GEOM_KM_INIC | INICIO_GEOM_KM_FINAL |
-#                            NAO_DETERMINADO | NAO_APLICAVEL.
 #       Obs_SNV     (texto)  trilha de auditoria: distancias, margens, codigos
 #                            concorrentes, causas de empate, causas de nao
 #                            associacao e causas de km indeterminado.
 #
-#   Alem da camada, o script imprime tres resumos conferidos por somatorias
-#   (associacao, quilometragem e diagnostico de sentido da SNV).
+#   Alem da camada, o script imprime resumos conferidos por somatorias
+#   (associacao, quilometragem, rodovias coincidentes e situacao dos trechos
+#   SNV para o calculo do km).
 #
 #
 # 4. PRINCIPAIS PARAMETROS
 # -----------------------------------------------------------------------------
 #   CRS_METRICA                 : SRC metrico usado em TODAS as medicoes.
 #   FATOR_RAIO                  : multiplicador do raio de busca.
-#   TOLERANCIA_CONEXAO_M        : distancia maxima entre extremos para que dois
-#                                 trechos sejam considerados conectados.
-#   TOLERANCIA_CONTINUIDADE_KM  : tolerancia numerica na comparacao de km.
 #   TOLERANCIA_EMPATE_DISTANCIA_M : tolerancia numerica de equidistancia.
 #   DISTANCIA_MAXIMA_ASSOCIACAO_M : limite duro opcional de associacao (None =
 #                                 desativado; ver secao "PARAMETROS EM AVALIACAO").
@@ -101,9 +96,9 @@
 # 5. FLUXO METODOLOGICO E CRITERIOS DE CLASSIFICACAO
 # -----------------------------------------------------------------------------
 #   (a) Reprojeta SNV e OAE para CRS_METRICA; indexa a SNV espacialmente.
-#   (b) Orienta previamente TODA a SNV (uma vez, antes das OAEs), por
-#       continuidade geometrica + continuidade quilometrica entre vizinhos de
-#       mesma chave (vl_br, sg_uf, sg_tipo_tr).
+#   (b) Prepara previamente TODA a SNV (uma vez, antes das OAEs): valida o
+#       intervalo de km e reduz a geometria a uma linha de parte unica, na
+#       ordem de vertices em que esta gravada.
 #   (c) Para cada OAE:
 #       c1. raio = max(extensao_da_OAE, mediana_das_extensoes) * FATOR_RAIO.
 #           A mediana e o piso do raio; ela protege OAEs com extensao ausente,
@@ -113,7 +108,9 @@
 #           entre a OAE e qualquer feicao portadora daquele codigo.
 #       c3. Seleciona um unico codigo e classifica (ver abaixo).
 #       c4. Se ha codigo, projeta a OAE sobre a geometria escolhida e interpola
-#           o km entre vl_km_inic e vl_km_fina segundo o sentido.
+#           km = vl_km_inic + fracao * (vl_km_fina - vl_km_inic), sendo fracao
+#           a posicao da projecao ao longo da linha (0 no primeiro vertice, 1
+#           no ultimo).
 #
 #   Criterios (mutuamente exclusivos, exaustivos, avaliados NESTA ORDEM):
 #
@@ -153,16 +150,18 @@
 #     codigos no raio, existiu concorrencia espacial a documentar e a decisao
 #     pertence ao ramo de concorrencia, ainda que so um codigo seja compativel.
 #
-#   Determinacao do sentido (por trecho SNV, nao por OAE):
-#     ANTERIOR  : existe trecho vizinho com vl_km_fina ~= vl_km_inic do trecho,
-#                 conectado a um de seus extremos -> aquele extremo e o km
-#                 inicial.
-#     POSTERIOR : existe trecho vizinho com vl_km_inic ~= vl_km_fina do trecho,
-#                 conectado a um de seus extremos -> aquele extremo e o km
-#                 final.
-#     AMBOS     : as duas evidencias existem e apontam extremos opostos.
-#     Sem evidencia unica e nao contraditoria, o sentido fica NAO_DETERMINADO e
-#     o km_SNV nao e calculado (nunca arbitrado).
+#   Sentido do km:
+#     Os trechos do SNV sao LineStrings digitalizadas no sentido crescente da
+#     rota, de modo que a propria ordem dos vertices define o sentido: nao ha
+#     consulta a trechos vizinhos nem a outros atributos.
+#     O km_SNV nao e calculado (fica NULL, com a causa em Obs_SNV) quando:
+#       - duas feicoes do mesmo codigo empatam em distancia da OAE;
+#       - o intervalo de km e invalido (ausente, negativo ou kf <= ki);
+#       - a geometria tem duas ou mais partes - juntar partes pode inverter a
+#         ordem dos vertices e, com ela, o sentido;
+#       - a projecao falha.
+#     Risco assumido: um trecho eventualmente digitalizado CONTRA o km produz
+#     km espelhado dentro do trecho (ki + kf - km correto), sem aviso.
 #
 #
 # 6. GARANTIAS DE DETERMINISMO
@@ -171,8 +170,7 @@
 #     de feicoes candidatas, nunca pela primeira lida.
 #   - Toda decisao exige cardinalidade 1; qualquer empate vira classe propria
 #     (TRECHO_EMPATE) ou km indeterminado. Nao ha desempate por ordem.
-#   - Ordenacoes existentes (bisect, sorted) servem a consulta e a impressao,
-#     nunca a selecao.
+#   - Ordenacoes existentes (sorted) servem a impressao, nunca a selecao.
 #   - Restricao numerica conhecida: a relacao "equidistante dentro da
 #     tolerancia" nao e transitiva. Com TOLERANCIA_EMPATE_DISTANCIA_M = 1e-8 m
 #     o efeito e desprezivel, mas a restricao esta registrada.
@@ -196,8 +194,7 @@
 import math
 import re
 import statistics
-from bisect import bisect_left, bisect_right
-from collections import Counter, defaultdict
+from collections import Counter
 
 from qgis.PyQt.QtCore import QVariant
 from qgis.core import (
@@ -230,9 +227,6 @@ CAMPO_VIA = "Via"
 CAMPO_VL_CODIGO = "vl_codigo"
 CAMPO_VL_KM_INIC = "vl_km_inic"
 CAMPO_VL_KM_FINA = "vl_km_fina"
-CAMPO_BR_SNV = "vl_br"
-CAMPO_UF_SNV = "sg_uf"
-CAMPO_TIPO_SNV = "sg_tipo_tr"
 CAMPO_ADMIN_SNV = "ds_tipo_ad"
 CAMPO_JURIS_SNV = "ds_jurisdi"
 
@@ -245,7 +239,6 @@ CAMPO_RAIO_SNV = "Raio_SNV"
 CAMPO_QTD_CODIGOS = "Qtd_Codigos"
 CAMPO_RODOVIAS_COINC = "Rodovias_coincidentes"
 CAMPO_CRITERIO = "Criterio"
-CAMPO_SENTIDO_KM = "Sentido_KM"
 CAMPO_OBSERVACAO = "Obs_SNV"
 
 # Todas as medicoes (distancia, comprimento, projecao) ocorrem neste SRC.
@@ -257,15 +250,7 @@ CRS_METRICA = QgsCoordinateReferenceSystem("EPSG:5880")
 # validade: e apenas a janela de coleta de candidatos.
 FATOR_RAIO = 2.0
 
-# A publicacao auditada apresentou as mesmas conexoes entre 1 e 20 metros.
-# Um metro basta; nao ampliar automaticamente para buscar vizinhos ausentes.
-TOLERANCIA_CONEXAO_M = 1.0
-# Somente tolerancia numerica: nao ligar intervalos separados por lacunas de km.
-TOLERANCIA_CONTINUIDADE_KM = 1e-8
 TOLERANCIA_EMPATE_DISTANCIA_M = 1e-8
-# Extremos separados por menos do que isto sao indistinguiveis por qualquer
-# tolerancia de conexao praticada; a linha e tratada como fechada.
-TOLERANCIA_GEOMETRIA_FECHADA_M = 1e-6
 
 # Alerta de auditoria (nao altera o calculo): razao entre o comprimento
 # geometrico do trecho e a extensao declarada (vl_km_fina - vl_km_inic).
@@ -339,7 +324,7 @@ def numero_finito(valor):
 
     Hipotese metodologica:
         Usada para km, que pode legitimamente ser zero. A validacao de dominio
-        (ki >= 0 e kf > ki) e feita adiante, em preparar_sentidos.
+        (ki >= 0 e kf > ki) e feita adiante, em preparar_trechos.
     """
     if valor is None or isinstance(valor, bool):
         return None
@@ -887,62 +872,46 @@ def retangulo_centrado(ponto, raio):
 
 
 def preparar_linha(geometria):
-    """Reduz a geometria de um trecho SNV a uma linha simples e continua.
+    """Reduz a geometria de um trecho SNV a uma linha de parte unica.
 
     Parametros:
         geometria: QgsGeometry do trecho, ja em CRS_METRICA.
 
     Retorna:
-        QgsGeometry de parte unica e comprimento positivo, ou None.
+        (linha, causa)
+        linha: QgsGeometry de parte unica e comprimento positivo, na mesma
+            ordem de vertices em que esta gravada, ou None.
+        causa: None quando a linha e apta; senao o motivo da recusa.
 
     Hipoteses metodologicas:
-        A quilometragem por interpolacao pressupoe uma unica progressao linear
-        continua. Uma MultiLineString so e aceita quando mergeLines() consegue
-        uni-la em uma unica linha; partes desconexas nao possuem ordem
-        intrinseca e sua concatenacao arbitraria produziria km sem sentido.
+        - Os trechos do SNV sao LineStrings digitalizadas no sentido crescente
+          da rota. A ordem dos vertices E o sentido do km: o primeiro vertice
+          corresponde a vl_km_inic e o ultimo a vl_km_fina. Por isso a ordem
+          gravada nunca e alterada aqui.
+        - Uma MultiLineString de UMA parte (forma comum em Shapefile e
+          GeoPackage) e apenas um envelope: a parte e extraida tal como esta.
 
     Excecoes:
-        mergeLines() pode inverter ou reordenar sub-partes. Isso e inofensivo
-        aqui porque o sentido NAO e inferido da ordem dos vertices, e sim da
-        conectividade com os trechos vizinhos (ver resolver_orientacao).
+        Duas ou mais partes sao recusadas (GEOMETRIA_SNV_MULTIPARTE). Junta-las
+        exigiria mergeLines(), que pode inverter ou reordenar as partes - e,
+        com isso, inverter o sentido do km sem aviso.
     """
     if geometria is None or geometria.isNull() or geometria.isEmpty():
-        return None
+        return None, "GEOMETRIA_SNV_AUSENTE"
+    if QgsWkbTypes.geometryType(geometria.wkbType()) != QgsWkbTypes.LineGeometry:
+        return None, "GEOMETRIA_SNV_NAO_LINEAR"
 
     linha = QgsGeometry(geometria)
-    if QgsWkbTypes.geometryType(linha.wkbType()) != QgsWkbTypes.LineGeometry:
-        return None
-
     if linha.isMultipart():
-        linha = linha.mergeLines()
-        if linha is None or linha.isNull() or linha.isEmpty() or linha.isMultipart():
-            return None
+        partes = linha.asGeometryCollection()
+        if len(partes) != 1:
+            return None, "GEOMETRIA_SNV_MULTIPARTE"
+        linha = QgsGeometry(partes[0])
 
     comprimento = linha.length()
-    return linha if math.isfinite(comprimento) and comprimento > 0 else None
-
-
-def extremos_linha(linha):
-    """Obtem o primeiro e o ultimo vertice de uma linha simples.
-
-    Retorna:
-        (QgsPointXY, QgsPointXY) ou (None, None) se a linha nao tiver vertices.
-
-    Hipotese metodologica:
-        Os indices 0 e 1 do par retornado sao apenas rotulos geometricos
-        ("inicio" e "fim" do armazenamento). Nada se presume sobre qual deles
-        corresponde ao km inicial; essa identificacao e feita adiante, pela
-        continuidade quilometrica com os vizinhos.
-    """
-    primeiro = None
-    ultimo = None
-    for vertice in linha.vertices():
-        if primeiro is None:
-            primeiro = QgsPointXY(vertice)
-        ultimo = QgsPointXY(vertice)
-    if primeiro is None or ultimo is None:
-        return None, None
-    return primeiro, ultimo
+    if not math.isfinite(comprimento) or comprimento <= 0:
+        return None, "GEOMETRIA_SNV_COMPRIMENTO_NULO"
+    return linha, None
 
 
 def geometria_pontual_metrica(feicao, transformacao):
@@ -1022,7 +991,6 @@ campos_snv = {campo.name() for campo in camada_snv.fields()}
 obrigatorios_oae = {CAMPO_EXTENSAO, CAMPO_VIA}
 obrigatorios_snv = {
     CAMPO_VL_CODIGO, CAMPO_VL_KM_INIC, CAMPO_VL_KM_FINA,
-    CAMPO_BR_SNV, CAMPO_UF_SNV, CAMPO_TIPO_SNV,
     CAMPO_ADMIN_SNV, CAMPO_JURIS_SNV,
 }
 
@@ -1043,7 +1011,6 @@ campos_novos = {
     CAMPO_QTD_CODIGOS,
     CAMPO_RODOVIAS_COINC,
     CAMPO_CRITERIO,
-    CAMPO_SENTIDO_KM,
     CAMPO_OBSERVACAO,
 }
 # Colisao de nomes duplicaria colunas na saida e tornaria ambiguo qual delas
@@ -1147,249 +1114,101 @@ mediana_extensao = statistics.median(extensoes_validas)
 
 
 # -----------------------------------------------------------------------------
-# 5) CONTINUIDADE GEOMETRICA E QUILOMETRICA (SENTIDO DOS TRECHOS)
+# 5) PREPARACAO DOS TRECHOS SNV E CALCULO DO KM
 # -----------------------------------------------------------------------------
-def resolver_orientacao(extremos, anteriores, posteriores):
-    """Determina qual extremo geometrico do trecho corresponde ao km inicial.
-
-    Parametros:
-        extremos: ((x0, y0), (x1, y1)) do trecho avaliado.
-        anteriores: lista de (fid, codigo, extremos) dos vizinhos cujo
-            vl_km_fina coincide com o vl_km_inic do trecho avaliado.
-        posteriores: lista de (fid, codigo, extremos) dos vizinhos cujo
-            vl_km_inic coincide com o vl_km_fina do trecho avaliado.
-
-    Retorna:
-        dict com as chaves:
-            "sentido"   : "INICIO_GEOM_KM_INIC" | "INICIO_GEOM_KM_FINAL" | None
-            "motivo"    : causa da indeterminacao, quando sentido e None
-            "evidencia" : "AMBOS" | "ANTERIOR" | "POSTERIOR" | None
-            "anterior"  : codigo do vizinho anterior usado, ou None
-            "posterior" : codigo do vizinho posterior usado, ou None
-
-    Hipoteses metodologicas:
-        1. A funcao e independente do QGIS (opera sobre coordenadas puras), o
-           que a torna testavel isoladamente na auditoria.
-        2. NAO se presume o sentido de nenhum vizinho. Usa-se apenas o fato
-           objetivo de que o extremo do trecho que toca um vizinho ANTERIOR
-           (km menor) e o extremo de km inicial, e vice-versa. Herdar o sentido
-           de um vizinho propagaria erro ao longo da malha.
-        3. Toda evidencia precisa ser UNICA. Duas feicoes concorrentes de um
-           mesmo lado, ou uma unica feicao que toca os dois extremos (aneis
-           viarios, retornos), nao recebem desempate.
-
-    Excecoes:
-        - CONEXAO_AMBIGUA      : evidencia nao unica (item 3).
-        - SEM_VIZINHO_COMPATIVEL: nenhum vizinho conectado dos dois lados.
-        - VIZINHOS_CONFLITANTES: anterior e posterior apontam o MESMO extremo,
-          o que e geometricamente impossivel e indica inconsistencia do dado.
-    """
-    evidencias = []
-    for candidatos in (anteriores, posteriores):
-        conexoes = []
-        for fid, codigo, extremos_vizinho in candidatos:
-            pares = [
-                (i, j)
-                for i, ponto in enumerate(extremos)
-                for j, ponto_vizinho in enumerate(extremos_vizinho)
-                if math.dist(ponto, ponto_vizinho) <= TOLERANCIA_CONEXAO_M
-            ]
-            if pares:
-                conexoes.append((fid, codigo, pares))
-        evidencias.append(conexoes)
-
-    anteriores_conectados, posteriores_conectados = evidencias
-    resultado = {
-        "sentido": None,
-        "motivo": None,
-        "evidencia": None,
-        "anterior": None,
-        "posterior": None,
-    }
-    if any(
-        len(lado) > 1 or any(len(pares) != 1 for _, _, pares in lado)
-        for lado in evidencias
-    ):
-        resultado["motivo"] = "CONEXAO_AMBIGUA"
-        return resultado
-
-    ant = anteriores_conectados[0] if anteriores_conectados else None
-    pos = posteriores_conectados[0] if posteriores_conectados else None
-    if ant is None and pos is None:
-        resultado["motivo"] = "SEM_VIZINHO_COMPATIVEL"
-        return resultado
-
-    # pares[0][0] e o indice do extremo DO TRECHO AVALIADO que realiza a
-    # conexao. Se o anterior e o posterior indicam o mesmo extremo, o dado e
-    # contraditorio e nenhum sentido pode ser afirmado.
-    if ant and pos and ant[2][0][0] == pos[2][0][0]:
-        resultado["motivo"] = "VIZINHOS_CONFLITANTES"
-        return resultado
-
-    # Um anterior identifica o extremo de km inicial. Um posterior identifica
-    # o extremo de km final. Quando ambos existem, precisam ser opostos.
-    inicio_geom_km_inic = ant[2][0][0] == 0 if ant else pos[2][0][0] == 1
-    resultado["sentido"] = (
-        "INICIO_GEOM_KM_INIC" if inicio_geom_km_inic else "INICIO_GEOM_KM_FINAL"
-    )
-    resultado["evidencia"] = "AMBOS" if ant and pos else "ANTERIOR" if ant else "POSTERIOR"
-    resultado["anterior"] = ant[1] if ant else None
-    resultado["posterior"] = pos[1] if pos else None
-    return resultado
-
-
-def preparar_sentidos(snv_por_id):
-    """Prepara geometrias e resolve o sentido de TODOS os trechos SNV.
+def preparar_trechos(snv_por_id):
+    """Valida, uma unica vez, cada trecho SNV para o calculo do km.
 
     Parametros:
         snv_por_id: dict fid -> QgsFeature da copia metrica da SNV.
 
     Retorna:
-        (preparados, sentidos)
-            preparados: fid -> {"codigo", "chave", "linha", "ki", "kf",
-                                "extremos", "erro"}
-            sentidos  : fid -> dict retornado por resolver_orientacao.
+        dict fid -> {"linha", "ki", "kf", "erro"}
+        erro: None quando o trecho e apto; senao a causa que impede o km.
 
     Hipoteses metodologicas:
-        1. A orientacao e propriedade do TRECHO, nao da OAE. Por isso e
-           resolvida uma unica vez, antes do laco das OAEs: duas OAEs no mesmo
-           trecho nao podem receber sentidos diferentes.
-        2. Sao vizinhos apenas trechos com a mesma chave (vl_br, sg_uf,
-           sg_tipo_tr). Cruzar tipos ou UFs ligaria rodovias distintas cujas
-           quilometragens sao independentes.
-        3. Feicoes de MESMO vl_codigo sao excluidas da vizinhanca: no SNV o
-           codigo identifica o trecho, de modo que outra feicao com o mesmo
-           codigo e uma particao do proprio trecho, e nao um vizinho capaz de
-           testemunhar seu sentido.
-        4. Uma linha cujos extremos coincidem (anel/retorno) tem extremos
-           indistinguiveis por qualquer tolerancia de conexao e nao pode ser
-           orientada; ela permanece, porem, disponivel como VIZINHA das demais.
+        - O sentido do km e o sentido de digitalizacao da LineString (ver
+          preparar_linha). Nao ha consulta a trechos vizinhos nem a outros
+          atributos: o trecho e autossuficiente.
+        - O preparo e propriedade do TRECHO, nao da OAE, e por isso ocorre uma
+          unica vez, antes do laco das OAEs.
 
-    Excecoes registradas em "erro" (todas resultam em sentido indeterminado):
-        IDENTIFICACAO_SNV_INVALIDA, INTERVALO_KM_INVALIDO,
-        GEOMETRIA_SNV_NAO_E_LINHA_SIMPLES_CONTINUA, EXTREMOS_SNV_INVALIDOS,
-        GEOMETRIA_SNV_FECHADA_EXTREMOS_INDISTINGUIVEIS.
+    Excecoes registradas em "erro" (todas resultam em km_SNV nulo):
+        INTERVALO_KM_INVALIDO - km ausente, negativo ou vl_km_fina <= vl_km_inic,
+            caso em que a interpolacao seria degenerada ou de sinal invertido;
+        e as causas de preparar_linha (GEOMETRIA_SNV_AUSENTE,
+        GEOMETRIA_SNV_NAO_LINEAR, GEOMETRIA_SNV_MULTIPARTE,
+        GEOMETRIA_SNV_COMPRIMENTO_NULO).
     """
     preparados = {}
-    por_inicio = defaultdict(list)
-    por_final = defaultdict(list)
     for fid, feicao in snv_por_id.items():
-        codigo = codigo_valido(feicao[CAMPO_VL_CODIGO])
-        chave = tuple(
-            codigo_valido(feicao[campo])
-            for campo in (CAMPO_BR_SNV, CAMPO_UF_SNV, CAMPO_TIPO_SNV)
-        )
-        linha = preparar_linha(feicao.geometry())
         ki = numero_finito(feicao[CAMPO_VL_KM_INIC])
         kf = numero_finito(feicao[CAMPO_VL_KM_FINA])
-        registro = {
-            "codigo": codigo, "chave": chave, "linha": linha,
-            "ki": ki, "kf": kf, "extremos": None, "erro": None,
-        }
-        preparados[fid] = registro
-        if not codigo or any(not parte for parte in chave):
-            registro["erro"] = "IDENTIFICACAO_SNV_INVALIDA"
-        elif ki is None or kf is None or ki < 0 or kf <= ki:
-            # kf <= ki torna a interpolacao degenerada ou de sinal invertido.
-            registro["erro"] = "INTERVALO_KM_INVALIDO"
-        elif linha is None:
-            registro["erro"] = "GEOMETRIA_SNV_NAO_E_LINHA_SIMPLES_CONTINUA"
+        linha, erro = None, None
+        if ki is None or kf is None or ki < 0 or kf <= ki:
+            erro = "INTERVALO_KM_INVALIDO"
         else:
-            a, b = extremos_linha(linha)
-            if a is None or b is None:
-                registro["erro"] = "EXTREMOS_SNV_INVALIDOS"
-                continue
-            extremos = ((a.x(), a.y()), (b.x(), b.y()))
-            if not all(math.isfinite(v) for ponto in extremos for v in ponto):
-                registro["erro"] = "EXTREMOS_SNV_INVALIDOS"
-                continue
-            registro["extremos"] = extremos
-            # A feicao entra nos indices ANTES da verificacao de anel: mesmo um
-            # trecho nao orientavel continua sendo evidencia valida de
-            # continuidade para os seus vizinhos.
-            por_inicio[chave].append((ki, fid))
-            por_final[chave].append((kf, fid))
-            if math.dist(extremos[0], extremos[1]) <= TOLERANCIA_GEOMETRIA_FECHADA_M:
-                registro["erro"] = "GEOMETRIA_SNV_FECHADA_EXTREMOS_INDISTINGUIVEIS"
-
-    for indice in (por_inicio, por_final):
-        for entradas in indice.values():
-            entradas.sort()  # Indice de consulta, nunca criterio de desempate.
-
-    def buscar(indice, registro, limite):
-        """Recupera vizinhos cujo km de emenda coincide com 'limite'.
-
-        A busca binaria opera sobre a janela [limite - tol, limite + tol]. A
-        tolerancia e estritamente numerica (1e-8 km = 0,01 mm): lacunas reais
-        de quilometragem NAO sao costuradas, pois representariam continuidade
-        inexistente na malha.
-        """
-        entradas = indice.get(registro["chave"], [])
-        inicio = bisect_left(entradas, (limite - TOLERANCIA_CONTINUIDADE_KM, -math.inf))
-        fim = bisect_right(entradas, (limite + TOLERANCIA_CONTINUIDADE_KM, math.inf))
-        return [
-            (fid, preparados[fid]["codigo"], preparados[fid]["extremos"])
-            for _, fid in entradas[inicio:fim]
-            if preparados[fid]["codigo"] != registro["codigo"]
-        ]
-
-    sentidos = {}
-    for fid, registro in preparados.items():
-        if registro["erro"]:
-            sentidos[fid] = {
-                "sentido": None, "motivo": registro["erro"],
-                "evidencia": None, "anterior": None, "posterior": None,
-            }
-            continue
-        sentidos[fid] = resolver_orientacao(
-            registro["extremos"],
-            buscar(por_final, registro, registro["ki"]),
-            buscar(por_inicio, registro, registro["kf"]),
-        )
-    return preparados, sentidos
+            linha, erro = preparar_linha(feicao.geometry())
+        preparados[fid] = {"linha": linha, "ki": ki, "kf": kf, "erro": erro}
+    return preparados
 
 
-print("Preparando o sentido dos trechos SNV...")
-snv_preparada, sentidos_snv = preparar_sentidos(snv_por_id)
-resumo_sentidos = Counter(
-    info["evidencia"] if info["sentido"] else info["motivo"]
-    for info in sentidos_snv.values()
+print("Preparando os trechos SNV...")
+snv_preparada = preparar_trechos(snv_por_id)
+resumo_trechos = Counter(
+    registro["erro"] or "APTO_AO_CALCULO_DO_KM" for registro in snv_preparada.values()
 )
-# O diagnostico de sentido nao e fixado no codigo: cada execucao reavalia a
-# camada efetivamente carregada e publica seus proprios numeros.
 
 
-def calcular_km(geometria_oae, linha, km_inicial, km_final, sentido):
+def interpolar_km(km_inicial, km_final, fracao):
+    """Converte a posicao relativa ao longo do trecho em quilometro.
+
+    Parametros:
+        km_inicial, km_final: vl_km_inic e vl_km_fina do trecho.
+        fracao: posicao relativa da projecao da OAE ao longo da linha, de 0 (no
+            primeiro vertice) a 1 (no ultimo vertice).
+
+    Retorna:
+        float - km_inicial + fracao * (km_final - km_inicial).
+
+    Hipoteses metodologicas:
+        - O primeiro vertice da LineString e o km inicial, porque o trecho esta
+          digitalizado no sentido crescente da rota.
+        - A fracao e limitada a [0, 1]: nenhuma OAE recebe km fora do intervalo
+          declarado do proprio trecho ao qual foi associada.
+    """
+    fracao = min(1.0, max(0.0, fracao))
+    return km_inicial + fracao * (km_final - km_inicial)
+
+
+def calcular_km(geometria_oae, linha, km_inicial, km_final):
     """Projeta a OAE sobre o trecho e interpola o quilometro correspondente.
 
     Parametros:
         geometria_oae: ponto da OAE em CRS_METRICA.
-        linha: geometria linear simples e continua do trecho (preparar_linha).
+        linha: linha de parte unica do trecho, na ordem de vertices gravada
+            (preparar_linha).
         km_inicial, km_final: vl_km_inic e vl_km_fina ja validados
             (finitos, km_inicial >= 0, km_final > km_inicial).
-        sentido: "INICIO_GEOM_KM_INIC" ou "INICIO_GEOM_KM_FINAL".
 
     Retorna:
-        dict {"km", "fracao", "comprimento_m", "escala"} ou None quando o
-        calculo nao puder ser concluido com evidencia suficiente.
-        "escala" = comprimento geometrico / extensao declarada em metros.
+        dict {"km", "fracao", "comprimento_m", "escala"} ou None quando a
+        projecao falhar. "escala" = comprimento geometrico / extensao declarada
+        em metros.
 
     Hipoteses metodologicas:
         1. A OAE e projetada ORTOGONALMENTE sobre o eixo do trecho: adota-se o
            ponto do eixo mais proximo da OAE como sua posicao linear.
-        2. A quilometragem varia LINEARMENTE ao longo da geometria. E a
-           hipotese central do metodo. Ela e exata quando o comprimento
-           geometrico coincide com a extensao declarada e aproximada quando
-           divergem (generalizacao do tracado, km herdado de versoes
-           anteriores do SNV). Por isso "escala" e devolvido e auditado.
-        3. A fracao e limitada a [0, 1]: nenhuma OAE recebe km fora do
-           intervalo declarado do proprio trecho ao qual foi associada.
-        4. Sentido ausente NUNCA e arbitrado. Sem sentido, nao ha km.
+        2. A quilometragem varia LINEARMENTE ao longo da geometria. Ela e exata
+           quando o comprimento geometrico coincide com a extensao declarada e
+           aproximada quando divergem (generalizacao do tracado, km herdado de
+           versoes anteriores do SNV). Por isso "escala" e devolvido e
+           sinalizado quando o desvio e grande.
+        3. O sentido e o da digitalizacao (ver interpolar_km).
 
     Excecoes:
         Retorna None se o comprimento for nulo/nao finito, se a projecao
-        falhar, se lineLocatePoint devolver posicao negativa (falha do GEOS) ou
-        se o sentido nao for um dos dois valores previstos.
+        falhar ou se lineLocatePoint devolver posicao negativa (falha do GEOS).
     """
     comprimento = linha.length()
     if not math.isfinite(comprimento) or comprimento <= 0:
@@ -1404,25 +1223,12 @@ def calcular_km(geometria_oae, linha, km_inicial, km_final, sentido):
         return None
 
     fracao = min(1.0, max(0.0, posicao / comprimento))
-    if km_inicial is None or km_final is None:
-        return None
-
-    if sentido == "INICIO_GEOM_KM_INIC":
-        km = km_inicial + fracao * (km_final - km_inicial)
-    elif sentido == "INICIO_GEOM_KM_FINAL":
-        # A geometria comeca no km FINAL: a fracao percorre a quilometragem
-        # em ordem decrescente.
-        km = km_final + fracao * (km_inicial - km_final)
-    else:
-        return None
-
-    extensao_declarada_m = abs(km_final - km_inicial) * 1000.0
-    escala = comprimento / extensao_declarada_m if extensao_declarada_m > 0 else None
+    extensao_declarada_m = (km_final - km_inicial) * 1000.0
     return {
-        "km": km,
+        "km": interpolar_km(km_inicial, km_final, fracao),
         "fracao": fracao,
         "comprimento_m": comprimento,
-        "escala": escala,
+        "escala": comprimento / extensao_declarada_m if extensao_declarada_m > 0 else None,
     }
 
 
@@ -1473,7 +1279,6 @@ provedor_saida.addAttributes(
         QgsField(CAMPO_QTD_CODIGOS, QVariant.Int),
         QgsField(CAMPO_RODOVIAS_COINC, QVariant.String, len=TAMANHO_MAX_RODOVIAS),
         QgsField(CAMPO_CRITERIO, QVariant.String, len=30),
-        QgsField(CAMPO_SENTIDO_KM, QVariant.String, len=30),
         QgsField(CAMPO_OBSERVACAO, QVariant.String, len=TAMANHO_MAX_OBS),
     ]
 )
@@ -1488,7 +1293,6 @@ idx_raio = saida.fields().indexOf(CAMPO_RAIO_SNV)
 idx_qtd = saida.fields().indexOf(CAMPO_QTD_CODIGOS)
 idx_rodovias_coinc = saida.fields().indexOf(CAMPO_RODOVIAS_COINC)
 idx_criterio = saida.fields().indexOf(CAMPO_CRITERIO)
-idx_sentido = saida.fields().indexOf(CAMPO_SENTIDO_KM)
 idx_observacao = saida.fields().indexOf(CAMPO_OBSERVACAO)
 
 # Derivado dos campos efetivamente criados, e nao de uma constante literal,
@@ -1538,10 +1342,6 @@ for oae in camada_oae.getFeatures():
     nova.setGeometry(QgsGeometry(oae.geometry()))
     nova.setAttributes(oae.attributes() + [None] * QTD_CAMPOS_NOVOS)
     nova.setAttribute(idx_raio, raio_procura)
-    # Valor inicial: sem trecho associado, o sentido nao se aplica. Sera
-    # sobrescrito por NAO_DETERMINADO ou pelo sentido efetivo quando houver
-    # trecho.
-    nova.setAttribute(idx_sentido, "NAO_APLICAVEL")
 
     geom_oae_metrica = geometria_pontual_metrica(oae, transformacao_oae)
     if geom_oae_metrica is None:
@@ -1684,7 +1484,6 @@ for oae in camada_oae.getFeatures():
     # geometrias do mesmo codigo nao recebe desempate, pois escolher qualquer
     # uma delas arbitraria a posicao linear e, portanto, o proprio km.
     if len(feicoes_mais_proximas) != 1:
-        nova.setAttribute(idx_sentido, "NAO_DETERMINADO")
         nova.setAttribute(idx_observacao, observacao_texto(
             "EMPATE_DE_GEOMETRIAS_DO_MESMO_CODIGO",
             f"N_GEOMETRIAS={len(feicoes_mais_proximas)}",
@@ -1697,16 +1496,12 @@ for oae in camada_oae.getFeatures():
     fid_escolhido = feicoes_mais_proximas[0][0]
     preparo = snv_preparada[fid_escolhido]
     linha = preparo["linha"]
-    info_sentido = sentidos_snv[fid_escolhido]
-    sentido = info_sentido["sentido"]
-    motivo_sentido = info_sentido["motivo"]
 
-    # Guarda defensiva: por construcao, toda feicao com sentido definido possui
-    # linha e intervalo de km validos. A verificacao mantem a garantia explicita
-    # caso preparar_sentidos venha a ser alterado.
-    if sentido is None or linha is None or preparo["ki"] is None or preparo["kf"] is None:
-        nova.setAttribute(idx_sentido, "NAO_DETERMINADO")
-        causa = motivo_sentido or "PREPARO_DO_TRECHO_INCOMPLETO"
+    # Trecho recusado no preparo (intervalo de km invalido ou geometria que nao
+    # e uma linha de parte unica): o km nao pode ser calculado. A guarda sobre
+    # linha e km cobre ainda uma eventual alteracao futura de preparar_trechos.
+    if preparo["erro"] or linha is None or preparo["ki"] is None or preparo["kf"] is None:
+        causa = preparo["erro"] or "PREPARO_DO_TRECHO_INCOMPLETO"
         nova.setAttribute(idx_observacao, observacao_texto(causa, observacao))
         contagem["KM_NAO_DETERMINADO"] += 1
         motivos_km_nulo[causa] += 1
@@ -1718,10 +1513,8 @@ for oae in camada_oae.getFeatures():
         linha,
         preparo["ki"],
         preparo["kf"],
-        sentido,
     )
     if resultado_km is None:
-        nova.setAttribute(idx_sentido, "NAO_DETERMINADO")
         nova.setAttribute(idx_observacao, observacao_texto(
             "FALHA_NA_PROJECAO_OU_INTERPOLACAO", observacao))
         contagem["KM_NAO_DETERMINADO"] += 1
@@ -1752,13 +1545,9 @@ for oae in camada_oae.getFeatures():
         contagem["ALERTA_EXTREMO"] += 1
 
     nova.setAttribute(idx_km, round(resultado_km["km"], 3))
-    nova.setAttribute(idx_sentido, sentido)
     nova.setAttribute(idx_observacao, observacao_texto(
         alerta_escala,
         alerta_extremo,
-        "EVIDENCIA=" + info_sentido["evidencia"],
-        "ANT=" + info_sentido["anterior"] if info_sentido["anterior"] else None,
-        "POS=" + info_sentido["posterior"] if info_sentido["posterior"] else None,
         f"FRACAO={resultado_km['fracao']:.6f}",
         observacao,
     ))
@@ -1840,19 +1629,17 @@ print(f"  em TRECHO_EMPATE (nao associadas):   "
 print(f"  entre codigos da MESMA BR (anomalia):{contagem['COINCIDENCIA_MESMA_BR']}")
 print("=" * 72)
 print()
-print("DIAGNOSTICO DO SENTIDO - TRECHOS SNV (NAO OAEs)")
-for evidencia in ("AMBOS", "ANTERIOR", "POSTERIOR"):
-    print(f"  Confirmado por {evidencia}: {resumo_sentidos[evidencia]}")
-for motivo in sorted(set(resumo_sentidos) - {"AMBOS", "ANTERIOR", "POSTERIOR"}):
-    print(f"  {motivo}: {resumo_sentidos[motivo]}")
-print(f"Total de feicoes SNV avaliadas: {sum(resumo_sentidos.values())}")
+print("SITUACAO DOS TRECHOS SNV PARA O CALCULO DO KM (NAO OAEs)")
+print(f"  APTO_AO_CALCULO_DO_KM: {resumo_trechos['APTO_AO_CALCULO_DO_KM']}")
+for situacao in sorted(set(resumo_trechos) - {"APTO_AO_CALCULO_DO_KM"}):
+    print(f"  {situacao}: {resumo_trechos[situacao]}")
+print(f"Total de feicoes SNV avaliadas: {sum(resumo_trechos.values())}")
 print(f"SNV excluidas por geometria/reprojecao: {snv_descartadas_geometria}")
 print()
 print("PARAMETROS DESTA EXECUCAO")
 print(f"  CRS metrico:                     {CRS_METRICA.authid()}")
 print(f"  FATOR_RAIO:                      {FATOR_RAIO}")
-print(f"  TOLERANCIA_CONEXAO_M:            {TOLERANCIA_CONEXAO_M}")
-print(f"  TOLERANCIA_CONTINUIDADE_KM:      {TOLERANCIA_CONTINUIDADE_KM}")
 print(f"  TOLERANCIA_EMPATE_DISTANCIA_M:   {TOLERANCIA_EMPATE_DISTANCIA_M}")
 print(f"  DISTANCIA_MAXIMA_ASSOCIACAO_M:   {DISTANCIA_MAXIMA_ASSOCIACAO_M}")
 print("  VIA_COMPATIVEL:                  pre-condicao universal (obrigatoria)")
+print("  SENTIDO_DO_KM:                   ordem de digitalizacao da LineString SNV")

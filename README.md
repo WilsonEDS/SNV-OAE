@@ -16,8 +16,9 @@ Para cada OAE da camada SGE, executa duas etapas encadeadas:
    (`vl_codigo`) ao qual a OAE pertence, ou registra explicitamente por que isso
    não foi possível.
 2. **Quilometragem** — calcula o quilômetro da OAE (`km_SNV`) dentro do trecho
-   selecionado, por interpolação linear entre `vl_km_inic` e `vl_km_fina`,
-   respeitando o sentido crescente da quilometragem.
+   selecionado, por interpolação linear entre `vl_km_inic` e `vl_km_fina`. O
+   sentido crescente do km é o sentido em que a linha do trecho está
+   digitalizada.
 
 O procedimento é **determinístico**: o resultado não depende da ordem de leitura
 das feições em nenhuma das camadas. Toda decisão exige um vencedor único; onde
@@ -35,16 +36,16 @@ em `NOME_CAMADA_OAE` e `NOME_CAMADA_SNV`.
 | Camada | Geometria | Campos obrigatórios |
 |---|---|---|
 | **SGE** (OAEs) | pontual | `Extensão (m)`, `Via` |
-| **SNV** (rodovias) | linear | `vl_codigo`, `vl_km_inic`, `vl_km_fina`, `vl_br`, `sg_uf`, `sg_tipo_tr`, `ds_tipo_ad`, `ds_jurisdi` |
+| **SNV** (rodovias) | linear (`LineString`) | `vl_codigo`, `vl_km_inic`, `vl_km_fina`, `ds_tipo_ad`, `ds_jurisdi` |
 
 A extensão da OAE serve apenas para dimensionar o raio de busca — nunca para
-decidir o trecho. `vl_br` + `sg_uf` + `sg_tipo_tr` formam a **chave de
-continuidade**: só trechos com a mesma chave são considerados vizinhos.
+decidir o trecho. Cada trecho SNV deve estar digitalizado no sentido crescente
+do km: o primeiro vértice corresponde a `vl_km_inic` e o último a `vl_km_fina`.
 
 ## Saída
 
 Uma camada em memória (`NOME_CAMADA_SAIDA`) com todos os campos originais da
-OAE mais onze campos de resultado e rastreabilidade:
+OAE mais dez campos de resultado e rastreabilidade:
 
 | Campo | Tipo | Conteúdo |
 |---|---|---|
@@ -57,7 +58,6 @@ OAE mais onze campos de resultado e rastreabilidade:
 | `Qtd_Codigos` | inteiro | quantidade de `vl_codigo` distintos no raio |
 | `Rodovias_coincidentes` | texto | BRs em **sobreposição comprovada** no local (ex.: `116;101`); NULL sem coincidência |
 | `Criterio` | texto | um dos seis critérios abaixo |
-| `Sentido_KM` | texto | `INICIO_GEOM_KM_INIC`, `INICIO_GEOM_KM_FINAL`, `NAO_DETERMINADO` ou `NAO_APLICAVEL` |
 | `Obs_SNV` | texto | trilha de rastreabilidade: distâncias, margens, códigos concorrentes e causas |
 
 `Administracao` e `Jurisdicao` são lidos da SNV no momento em que o
@@ -66,8 +66,9 @@ preenchidos mesmo quando o km não pode ser calculado. Se duas feições do mesm
 código estiverem à mesma distância e discordarem nesses valores, o campo fica
 NULL e a divergência é registrada em `Obs_SNV`.
 
-O script também imprime três resumos conferidos por somatórias: associação,
-quilometragem e diagnóstico de sentido dos trechos SNV.
+O script também imprime resumos conferidos por somatórias: associação,
+quilometragem, rodovias coincidentes e situação dos trechos SNV para o cálculo
+do km.
 
 ## Critérios de classificação
 
@@ -87,19 +88,29 @@ nenhum código de BR diferente é atribuído, ainda que seja o único no raio.
 A distância é critério de desempate *dentro* do conjunto compatível, nunca de
 admissão.
 
-## Determinação do sentido e cálculo do km
+## Cálculo do km
 
-O sentido é propriedade do **trecho**, não da OAE, e é resolvido uma única vez
-para toda a SNV antes do laço das obras. Um trecho vizinho cujo `vl_km_fina`
-coincide com o `vl_km_inic` do trecho avaliado identifica o extremo de km
-inicial; um vizinho posterior identifica o extremo final. A evidência precisa
-ser única e não contraditória — caso contrário o sentido fica
-`NAO_DETERMINADO` e **o km não é calculado**. Nenhum quilômetro é arbitrado sem
-evidência de continuidade.
+Os trechos do SNV são `LineString` digitalizadas no sentido crescente da rota,
+então a própria ordem dos vértices define o sentido do km. Não há consulta a
+trechos vizinhos nem a outros atributos.
 
-Havendo sentido, a OAE é projetada ortogonalmente sobre o eixo, obtém-se sua
-posição relativa ao longo da geometria e o km é interpolado entre os limites
-declarados do trecho.
+Atribuído o trecho, a OAE é projetada ortogonalmente sobre a linha e obtém-se
+sua posição relativa (`fração`), de 0 no primeiro vértice a 1 no último:
+
+```
+km_SNV = vl_km_inic + fração × (vl_km_fina − vl_km_inic)
+```
+
+O km fica NULL, com a causa registrada em `Obs_SNV`, quando:
+
+- duas feições do mesmo código estão à mesma distância da OAE;
+- o intervalo de km do trecho é inválido (ausente, negativo ou
+  `vl_km_fina` ≤ `vl_km_inic`);
+- a geometria tem duas ou mais partes (`GEOMETRIA_SNV_MULTIPARTE`) — juntá-las
+  poderia inverter a ordem dos vértices e, com ela, o sentido;
+- a projeção falha.
+
+Uma `MultiLineString` com uma única parte é aceita e usada como está.
 
 ## Como executar
 
@@ -118,7 +129,6 @@ Todos no início do arquivo:
 |---|---|---|
 | `CRS_METRICA` | EPSG:5880 | SRC de todas as medições |
 | `FATOR_RAIO` | 2.0 | multiplicador do raio de busca |
-| `TOLERANCIA_CONEXAO_M` | 1.0 | distância máxima entre extremos para considerar dois trechos conectados |
 | `TOLERANCIA_EMPATE_DISTANCIA_M` | 1e-8 | tolerância numérica de equidistância |
 | `DISTANCIA_MAXIMA_ASSOCIACAO_M` | `None` | limite duro opcional de associação (desativado) |
 
@@ -132,11 +142,12 @@ As funções sem dependência do QGIS são extraídas do script e exercitadas fo
 do ambiente QGIS:
 
 ```bash
-python3 testes/teste_funcoes_puras.py     # 45 verificações
+python3 testes/teste_funcoes_puras.py     # 51 verificações
 python3 testes/teste_classificacao.py     # 66 verificações
 ```
 
-Cobrem a normalização de dados, a determinação do sentido, os seis critérios e
+Cobrem a normalização de dados, o preparo dos trechos e a interpolação do km,
+os seis critérios e
 as invariantes do procedimento — entre elas a compatibilidade obrigatória com a
 `Via` e a independência do resultado frente à ordem de leitura das feições.
 
@@ -147,8 +158,10 @@ as invariantes do procedimento — entre elas a compatibilidade obrigatória com
 - **A compatibilidade compara apenas o número da BR**, não a UF embutida no
   `vl_codigo`. Em divisas estaduais, um trecho da mesma BR em UF vizinha é
   candidato válido.
-- **A chave de vizinhança é restritiva.** Em divisas e mudanças de tipo de
-  trecho a cadeia se rompe, e o sentido pode ficar indeterminado.
+- **O sentido do km depende da digitalização.** Um trecho eventualmente
+  digitalizado contra o km produz km espelhado dentro do trecho
+  (`vl_km_inic + vl_km_fina − km correto`), sem aviso. Vale conferir por
+  amostragem em OAEs com marco quilométrico conhecido.
 - **A interpolação pressupõe proporcionalidade** entre comprimento geométrico e
   quilometragem declarada. Desvios acima de 10% são sinalizados em `Obs_SNV`.
 - **A detecção de coincidência espelha o critério.** Rodovias coincidentes com
