@@ -35,19 +35,24 @@
 #       - CAMPO_VL_KM_FINA  ("vl_km_fina") : km final do trecho.
 #       - CAMPO_ADMIN_SNV   ("ds_tipo_ad") : tipo de administracao do trecho.
 #       - CAMPO_JURIS_SNV   ("ds_jurisdi") : jurisdicao do trecho.
+#       - CAMPO_VERSAO_SNV_ORIGEM ("Versão SNV") : versao da SNV do trecho.
 #       - geometria: LineString (ou MultiLineString de uma unica parte)
 #         digitalizada no sentido crescente do km.
 #
 #
 # 3. DADOS DE SAIDA
 # -----------------------------------------------------------------------------
-#   Camada em memoria NOME_CAMADA_SAIDA ("SGExSNV"), com todos os campos
-#   originais da OAE seguidos dos campos criados, nesta ordem:
+#   Camada em memoria NOME_CAMADA_SAIDA ("SGExSNV"), com os campos originais
+#   da OAE - exceto CAMPOS_OAE_EXCLUIDOS ("Km", "Código SNV", "Versão SNV"),
+#   resultado de uma associacao anterior e substituidos pelos valores calculados
+#   aqui - seguidos dos campos criados, nesta ordem:
 #
 #       Trecho_SNV  (texto)  codigo vl_codigo selecionado, ou NULL.
+#       Versao_SNV  (texto)  "Versão SNV" do trecho atribuido, ou NULL: registra
+#                            com qual versao da SNV o km foi calculado.
 #       Administracao (texto) ds_tipo_ad do trecho atribuido, ou NULL.
 #       Jurisdicao  (texto)  ds_jurisdi do trecho atribuido, ou NULL.
-#                            Ambos sao lidos no momento em que o Trecho_SNV e
+#                            Os tres sao lidos no momento em que o Trecho_SNV e
 #                            atribuido, da feicao do codigo que realiza a menor
 #                            distancia da OAE - a mesma usada no calculo do km.
 #                            Ficam preenchidos ainda que o km nao possa ser
@@ -249,13 +254,21 @@ CAMPO_EXTENSAO = "Extensão (m)"
 CAMPO_VIA = "Via"
 CAMPO_RELACAO_SNV = "Relacao_SNV"
 
+# Colunas da SGE vindas de uma associacao anterior com a SNV. Nao sao copiadas
+# para a saida: km_SNV, Trecho_SNV e Versao_SNV as substituem, calculados contra
+# a SNV atual, e manter as duas versoes do mesmo dado lado a lado induziria a
+# erro. Nomes exatos, com acento e espaco.
+CAMPOS_OAE_EXCLUIDOS = ("Km", "Código SNV", "Versão SNV")
+
 CAMPO_VL_CODIGO = "vl_codigo"
 CAMPO_VL_KM_INIC = "vl_km_inic"
 CAMPO_VL_KM_FINA = "vl_km_fina"
 CAMPO_ADMIN_SNV = "ds_tipo_ad"
 CAMPO_JURIS_SNV = "ds_jurisdi"
+CAMPO_VERSAO_SNV_ORIGEM = "Versão SNV"
 
 CAMPO_TRECHO_SNV = "Trecho_SNV"
+CAMPO_VERSAO_SNV = "Versao_SNV"
 CAMPO_ADMINISTRACAO = "Administracao"
 CAMPO_JURISDICAO = "Jurisdicao"
 CAMPO_KM_SNV = "km_SNV"
@@ -504,6 +517,33 @@ def valor_unanime(valores):
     return None, len(distintos) > 1
 
 
+def indices_mantidos(nomes_campos, nomes_excluidos):
+    """Escolhe os campos da camada de origem que serao copiados para a saida.
+
+    Parametros:
+        nomes_campos: nomes dos campos da camada de origem, na ordem original.
+        nomes_excluidos: nomes que NAO devem ser copiados.
+
+    Retorna:
+        (indices, excluidos, nao_encontrados)
+        indices: posicoes dos campos mantidos, na ordem original.
+        excluidos: nomes efetivamente retirados.
+        nao_encontrados: nomes pedidos para exclusao que a camada nao tem -
+            informados no console para que um nome digitado diferente (acento,
+            espaco) nao passe despercebido.
+
+    Hipotese metodologica:
+        A comparacao e exata. Aproximar nomes poderia retirar uma coluna que
+        apenas se parece com a pedida.
+    """
+    excluir = set(nomes_excluidos)
+    indices = [i for i, nome in enumerate(nomes_campos) if nome not in excluir]
+    presentes = set(nomes_campos)
+    excluidos = [n for n in nomes_excluidos if n in presentes]
+    nao_encontrados = [n for n in nomes_excluidos if n not in presentes]
+    return indices, excluidos, nao_encontrados
+
+
 def truncar_texto(texto, limite):
     """Limita um texto ao comprimento declarado do campo que vai recebe-lo.
 
@@ -589,6 +629,7 @@ TEXTO_OBS = {
     "TRECHO_SNV_CONTINUIDADE_CONTRADITORIA": "Trecho SNV com continuidade contraditória",
     "TRECHO_SNV_POSSIVELMENTE_INVERTIDO": "Trecho SNV possivelmente invertido",
     "UNICO_CODIGO_INCOMPATIVEL_COM_VIA": "Único código incompatível com a via",
+    "VERSAO_SNV_DIVERGENTE_ENTRE_GEOMETRIAS": "Versão SNV divergente entre geometrias",
     "VIA_AUSENTE_OU_NAO_NORMALIZAVEL": "Via ausente ou não normalizável",
     # chaves de CHAVE=valor
     "ALERTA_ESCALA_KM_GEOM": "Alerta de escala km/geometria",
@@ -1187,7 +1228,7 @@ campos_snv = {campo.name() for campo in camada_snv.fields()}
 obrigatorios_oae = {CAMPO_EXTENSAO, CAMPO_VIA, CAMPO_RELACAO_SNV}
 obrigatorios_snv = {
     CAMPO_VL_CODIGO, CAMPO_VL_KM_INIC, CAMPO_VL_KM_FINA,
-    CAMPO_ADMIN_SNV, CAMPO_JURIS_SNV,
+    CAMPO_ADMIN_SNV, CAMPO_JURIS_SNV, CAMPO_VERSAO_SNV_ORIGEM,
 }
 
 faltantes_oae = sorted(obrigatorios_oae - campos_oae)
@@ -1199,6 +1240,7 @@ if faltantes_snv:
 
 campos_novos = {
     CAMPO_TRECHO_SNV,
+    CAMPO_VERSAO_SNV,
     CAMPO_ADMINISTRACAO,
     CAMPO_JURISDICAO,
     CAMPO_KM_SNV,
@@ -1564,7 +1606,9 @@ if not saida.isValid():
     raise Exception("Falha ao criar a camada de saida em memoria.")
 
 provedor_saida = saida.dataProvider()
-provedor_saida.addAttributes(camada_oae.fields())
+indices_oae_mantidos, campos_oae_excluidos, campos_oae_nao_encontrados = indices_mantidos(
+    camada_oae.fields().names(), CAMPOS_OAE_EXCLUIDOS)
+provedor_saida.addAttributes([camada_oae.fields().at(i) for i in indices_oae_mantidos])
 
 
 def comprimento_origem(nome_campo):
@@ -1581,6 +1625,7 @@ def comprimento_origem(nome_campo):
 
 TAMANHO_ADMINISTRACAO = comprimento_origem(CAMPO_ADMIN_SNV)
 TAMANHO_JURISDICAO = comprimento_origem(CAMPO_JURIS_SNV)
+TAMANHO_VERSAO_SNV = comprimento_origem(CAMPO_VERSAO_SNV_ORIGEM)
 
 provedor_saida.addAttributes(
     [
@@ -1588,6 +1633,7 @@ provedor_saida.addAttributes(
         # atributos, km, coincidencia, validacao, criterio e observacao), depois
         # os dados de apoio a conferencia.
         QgsField(CAMPO_TRECHO_SNV, QVariant.String, len=80),
+        QgsField(CAMPO_VERSAO_SNV, QVariant.String, len=TAMANHO_VERSAO_SNV),
         QgsField(CAMPO_ADMINISTRACAO, QVariant.String, len=TAMANHO_ADMINISTRACAO),
         QgsField(CAMPO_JURISDICAO, QVariant.String, len=TAMANHO_JURISDICAO),
         QgsField(CAMPO_KM_SNV, QVariant.Double, len=20, prec=3),
@@ -1603,6 +1649,7 @@ provedor_saida.addAttributes(
 saida.updateFields()
 
 idx_trecho = saida.fields().indexOf(CAMPO_TRECHO_SNV)
+idx_versao_snv = saida.fields().indexOf(CAMPO_VERSAO_SNV)
 idx_administracao = saida.fields().indexOf(CAMPO_ADMINISTRACAO)
 idx_jurisdicao = saida.fields().indexOf(CAMPO_JURISDICAO)
 idx_km = saida.fields().indexOf(CAMPO_KM_SNV)
@@ -1616,7 +1663,7 @@ idx_observacao = saida.fields().indexOf(CAMPO_OBSERVACAO)
 
 # Derivado dos campos efetivamente criados, e nao de uma constante literal,
 # para que a inclusao de novos campos de auditoria nao quebre a montagem.
-QTD_CAMPOS_NOVOS = saida.fields().count() - camada_oae.fields().count()
+QTD_CAMPOS_NOVOS = saida.fields().count() - len(indices_oae_mantidos)
 if QTD_CAMPOS_NOVOS != len(campos_novos):
     raise RuntimeError("Estrutura da camada de saida divergente da esperada.")
 
@@ -1661,7 +1708,9 @@ for oae in camada_oae.getFeatures():
 
     nova = QgsFeature(saida.fields())
     nova.setGeometry(QgsGeometry(oae.geometry()))
-    nova.setAttributes(oae.attributes() + [None] * QTD_CAMPOS_NOVOS)
+    atributos_oae = oae.attributes()
+    nova.setAttributes([atributos_oae[i] for i in indices_oae_mantidos]
+                       + [None] * QTD_CAMPOS_NOVOS)
     nova.setAttribute(idx_raio, raio_procura)
 
     geom_oae_metrica = geometria_pontual_metrica(oae, transformacao_oae)
@@ -1789,11 +1838,14 @@ for oae in camada_oae.getFeatures():
     nova.setAttribute(idx_trecho, codigo_escolhido)
     nova.setAttribute(idx_dist, round(distancia_escolhida, 3))
 
-    # Administracao e Jurisdicao descrevem o TRECHO atribuido e sao lidas aqui,
+    # Versao_SNV, Administracao e Jurisdicao descrevem o TRECHO atribuido e sao
+    # lidas aqui,
     # junto do Trecho_SNV, e nao da feicao usada no km: o calculo do km pode
     # sair antecipadamente (empate entre geometrias, sentido indeterminado), e
     # a OAE ficaria com trecho atribuido mas sem esses atributos.
     for idx_destino, campo_origem, tamanho, marcador in (
+        (idx_versao_snv, CAMPO_VERSAO_SNV_ORIGEM, TAMANHO_VERSAO_SNV,
+         "VERSAO_SNV_DIVERGENTE_ENTRE_GEOMETRIAS"),
         (idx_administracao, CAMPO_ADMIN_SNV, TAMANHO_ADMINISTRACAO,
          "ADMINISTRACAO_DIVERGENTE_ENTRE_GEOMETRIAS"),
         (idx_jurisdicao, CAMPO_JURIS_SNV, TAMANHO_JURISDICAO,
@@ -1948,6 +2000,11 @@ print(f"Feicoes SNV sem geometria/reprojecao:  {snv_descartadas_geometria}")
 print(f"Administracao/Jurisdicao divergentes:  {contagem['ATRIBUTO_TRECHO_DIVERGENTE']}"
       " ocorrencias (geometrias empatadas do mesmo codigo)")
 print(f"Camada criada:                         {NOME_CAMADA_SAIDA}")
+print("Colunas da SGE nao copiadas:          "
+      f" {', '.join(campos_oae_excluidos) or 'nenhuma'}")
+if campos_oae_nao_encontrados:
+    print("  ATENCAO - pedidas para exclusao, mas ausentes na SGE (confira acento"
+          f" e espaco): {', '.join(campos_oae_nao_encontrados)}")
 print()
 print("=" * 72)
 print("RESUMO - Calculo do quilometro")

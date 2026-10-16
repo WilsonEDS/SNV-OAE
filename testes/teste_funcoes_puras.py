@@ -10,10 +10,12 @@ alvos = {"numero_finito_positivo", "numero_finito", "normalizar_via",
          "truncar_texto", "observacao_texto", "interpolar_km",
          "preparar_trechos", "diagnosticar_sentido",
          "diagnosticar_trechos", "prefixo_codigo", "texto_generico",
-         "texto_saida_obs", "texto_saida_criterio", "status_validacao"}
+         "texto_saida_obs", "texto_saida_criterio", "status_validacao",
+         "indices_mantidos"}
 consts = {"TAMANHO_MAX_OBS", "LIMITE_CODIGOS_LISTADOS", "TOLERANCIA_CONEXAO_M",
           "CASAS_DECIMAIS_KM", "CAMPO_VL_CODIGO", "TEXTO_CRITERIO", "TEXTO_OBS",
           "TEXTO_VALOR_OBS", "STATUS_VALIDADO", "STATUS_A_VALIDAR",
+          "CAMPOS_OAE_EXCLUIDOS",
           "CAMPO_VL_KM_INIC",
           "CAMPO_VL_KM_FINA"}
 
@@ -309,5 +311,24 @@ checa("outra BR nao e vizinha", alertas["D"], None)
 checa("particao do mesmo codigo nao e vizinha", alertas["F"], None)
 checa("km com ruido abaixo do metro emenda", alertas["H"], INV)
 checa("trecho recusado no preparo fica sem aviso", alertas["R"], None)
+
+# --- colunas da SGE copiadas para a saida ---
+M = g["indices_mantidos"]
+EXC = g["CAMPOS_OAE_EXCLUIDOS"]
+checa("colunas excluidas sao as pedidas", EXC, ("Km", "Código SNV", "Versão SNV"))
+sge = ["ID", "Km", "Via", "Código SNV", "Extensão (m)", "Versão SNV", "Relacao_SNV"]
+idx, excluidos, ausentes = M(sge, EXC)
+checa("mantem os demais, na ordem original", [sge[i] for i in idx],
+      ["ID", "Via", "Extensão (m)", "Relacao_SNV"])
+checa("informa as excluidas", excluidos, ["Km", "Código SNV", "Versão SNV"])
+checa("nenhuma ausente", ausentes, [])
+# Nome sem acento na SGE nao e retirado, e a falta e informada.
+idx, excluidos, ausentes = M(["ID", "Km", "Codigo SNV"], EXC)
+checa("comparacao exata: sem acento fica", [["ID", "Km", "Codigo SNV"][i] for i in idx],
+      ["ID", "Codigo SNV"])
+checa("ausentes informadas", ausentes, ["Código SNV", "Versão SNV"])
+# Campos usados pelo script nunca sao retirados.
+for usado in ("Extensão (m)", "Via", "Relacao_SNV"):
+    checa(f"{usado} nao e excluido", usado in EXC, False)
 
 print(f"{ok} verificacoes OK")

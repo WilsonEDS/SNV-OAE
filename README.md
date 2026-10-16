@@ -36,7 +36,7 @@ em `NOME_CAMADA_OAE` e `NOME_CAMADA_SNV`.
 | Camada | Geometria | Campos obrigatórios |
 |---|---|---|
 | **SGE** (OAEs) | pontual | `Extensão (m)`, `Via`, `Relacao_SNV` |
-| **SNV** (rodovias) | linear (`LineString`) | `vl_codigo`, `vl_km_inic`, `vl_km_fina`, `ds_tipo_ad`, `ds_jurisdi` |
+| **SNV** (rodovias) | linear (`LineString`) | `vl_codigo`, `vl_km_inic`, `vl_km_fina`, `ds_tipo_ad`, `ds_jurisdi`, `Versão SNV` |
 
 A extensão da OAE serve apenas para dimensionar o raio de busca — nunca para
 decidir o trecho. Cada trecho SNV deve estar digitalizado no sentido crescente
@@ -44,12 +44,13 @@ do km: o primeiro vértice corresponde a `vl_km_inic` e o último a `vl_km_fina`
 
 ## Saída
 
-Uma camada em memória chamada **`SGExSNV`** com todos os campos originais da
-OAE seguidos de onze campos criados, nesta ordem:
+Uma camada em memória chamada **`SGExSNV`** com os campos originais da OAE
+seguidos de doze campos criados, nesta ordem:
 
 | Campo | Tipo | Conteúdo |
 |---|---|---|
 | `Trecho_SNV` | texto | `vl_codigo` selecionado, ou NULL |
+| `Versao_SNV` | texto | `Versão SNV` do trecho atribuído — com qual versão da SNV o km foi calculado |
 | `Administracao` | texto | `ds_tipo_ad` do trecho atribuído, ou NULL |
 | `Jurisdicao` | texto | `ds_jurisdi` do trecho atribuído, ou NULL |
 | `km_SNV` | real | quilômetro interpolado, ou NULL |
@@ -79,7 +80,12 @@ Reproduz a fórmula da planilha de conferência:
 os demais casos. A comparação com `L` ignora maiúsculas e espaços nas bordas —
 neste último ponto difere do Excel, que considera `" L"` diferente de `"L"`.
 
-`Administracao` e `Jurisdicao` são lidos da SNV no momento em que o
+As colunas `Km`, `Código SNV` e `Versão SNV` da SGE **não são copiadas**: vêm
+de uma associação anterior e são substituídas por `km_SNV`, `Trecho_SNV` e
+`Versao_SNV`, calculados contra a SNV atual. Se alguma delas não existir na SGE
+com esse nome exato, o console avisa.
+
+`Versao_SNV`, `Administracao` e `Jurisdicao` são lidos da SNV no momento em que o
 `Trecho_SNV` é atribuído, da feição do código mais próxima da OAE. Ficam
 preenchidos mesmo quando o km não pode ser calculado. Se duas feições do mesmo
 código estiverem à mesma distância e discordarem nesses valores, o campo fica
@@ -182,7 +188,7 @@ As funções sem dependência do QGIS são extraídas do script e exercitadas fo
 do ambiente QGIS:
 
 ```bash
-python3 testes/teste_funcoes_puras.py     # 112 verificações
+python3 testes/teste_funcoes_puras.py     # 121 verificações
 python3 testes/teste_classificacao.py     # 66 verificações
 ```
 
