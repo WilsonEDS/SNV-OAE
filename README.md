@@ -35,7 +35,7 @@ em `NOME_CAMADA_OAE` e `NOME_CAMADA_SNV`.
 
 | Camada | Geometria | Campos obrigatórios |
 |---|---|---|
-| **SGE** (OAEs) | pontual | `Extensão (m)`, `Via` |
+| **SGE** (OAEs) | pontual | `Extensão (m)`, `Via`, `Relacao_SNV` |
 | **SNV** (rodovias) | linear (`LineString`) | `vl_codigo`, `vl_km_inic`, `vl_km_fina`, `ds_tipo_ad`, `ds_jurisdi` |
 
 A extensão da OAE serve apenas para dimensionar o raio de busca — nunca para
@@ -44,8 +44,8 @@ do km: o primeiro vértice corresponde a `vl_km_inic` e o último a `vl_km_fina`
 
 ## Saída
 
-Uma camada em memória (`NOME_CAMADA_SAIDA`) com todos os campos originais da
-OAE mais dez campos de resultado e rastreabilidade:
+Uma camada em memória chamada **`SGExSNV`** com todos os campos originais da
+OAE seguidos de onze campos criados, nesta ordem:
 
 | Campo | Tipo | Conteúdo |
 |---|---|---|
@@ -53,12 +53,31 @@ OAE mais dez campos de resultado e rastreabilidade:
 | `Administracao` | texto | `ds_tipo_ad` do trecho atribuído, ou NULL |
 | `Jurisdicao` | texto | `ds_jurisdi` do trecho atribuído, ou NULL |
 | `km_SNV` | real | quilômetro interpolado, ou NULL |
+| `Rodovias_coincidentes` | texto | BRs em **sobreposição comprovada** no local (ex.: `116;101`); NULL sem coincidência |
+| `Status` | texto | `Validado` ou `A validar` (ver abaixo) |
+| `Criterio` | texto | um dos seis critérios abaixo, em texto legível |
+| `Obs_SNV` | texto | trilha de rastreabilidade: distâncias, margens, códigos concorrentes, causas e avisos |
 | `Dist_SNV_m` | real | distância, em metros, da OAE ao trecho atribuído |
 | `Raio_SNV` | real | raio de busca aplicado àquela OAE |
 | `Qtd_Codigos` | inteiro | quantidade de `vl_codigo` distintos no raio |
-| `Rodovias_coincidentes` | texto | BRs em **sobreposição comprovada** no local (ex.: `116;101`); NULL sem coincidência |
-| `Criterio` | texto | um dos seis critérios abaixo |
-| `Obs_SNV` | texto | trilha de rastreabilidade: distâncias, margens, códigos concorrentes e causas |
+
+Os textos de `Criterio`, `Status` e `Obs_SNV` saem em português, com só a
+primeira letra maiúscula e as siglas preservadas — por exemplo
+`Trecho SNV possivelmente invertido; Via da OAE: 116`.
+
+### Status
+
+Reproduz a fórmula da planilha de conferência:
+
+```
+=SE(OU(E(Criterio="UNICO_TRECHO"; Relacao_SNV="L");
+       E(Criterio="TRECHO_COINCIDENTE"; Qtd_Codigos<3)); "VALIDADO"; "A VALIDAR")
+```
+
+`Validado` quando a OAE é de **único trecho** e `Relacao_SNV` = `L`, ou de
+**trecho coincidente** com menos de três códigos no raio; `A validar` em todos
+os demais casos. A comparação com `L` ignora maiúsculas e espaços nas bordas —
+neste último ponto difere do Excel, que considera `" L"` diferente de `"L"`.
 
 `Administracao` e `Jurisdicao` são lidos da SNV no momento em que o
 `Trecho_SNV` é atribuído, da feição do código mais próxima da OAE. Ficam
@@ -76,12 +95,12 @@ Mutuamente exclusivos e exaustivos, avaliados **nesta ordem**:
 
 | Critério | Condição |
 |---|---|
-| `SEM_TRECHO` | geometria da OAE inválida, ou nenhum `vl_codigo` válido dentro do raio |
-| `UNICO_TRECHO` | exatamente um código no raio, **e** compatível com a `Via` |
-| `TRECHO_DIVERGENTE` | nenhum código do raio é compatível com a `Via`, ou a `Via` está ausente |
-| `TRECHO_EMPATE` | dois ou mais códigos compatíveis à **mesma distância** da OAE |
-| `TRECHO_COINCIDENTE` | vencedor único que compartilha porção linear local com outro código equidistante |
-| `TRECHO_FRONTEIRA` | vencedor único por menor distância, sem coincidência comprovada |
+| Sem trecho | geometria da OAE inválida, ou nenhum `vl_codigo` válido dentro do raio |
+| Único trecho | exatamente um código no raio, **e** compatível com a `Via` |
+| Trecho divergente | nenhum código do raio é compatível com a `Via`, ou a `Via` está ausente |
+| Trecho empate | dois ou mais códigos compatíveis à **mesma distância** da OAE |
+| Trecho coincidente | vencedor único que compartilha porção linear local com outro código equidistante |
+| Trecho fronteira | vencedor único por menor distância, sem coincidência comprovada |
 
 A compatibilidade com a `Via` declarada da OAE é **pré-condição universal**:
 nenhum código de BR diferente é atribuído, ainda que seja o único no raio.
@@ -106,7 +125,7 @@ O km fica NULL, com a causa registrada em `Obs_SNV`, quando:
 - duas feições do mesmo código estão à mesma distância da OAE;
 - o intervalo de km do trecho é inválido (ausente, negativo ou
   `vl_km_fina` ≤ `vl_km_inic`);
-- a geometria tem duas ou mais partes (`GEOMETRIA_SNV_MULTIPARTE`) — juntá-las
+- a geometria tem duas ou mais partes (`Geometria SNV multiparte`) — juntá-las
   poderia inverter a ordem dos vértices e, com ela, o sentido;
 - a projeção falha.
 
@@ -124,8 +143,8 @@ recebe um aviso, **e o km continua sendo calculado pela geometria**:
 
 | Aviso | Situação |
 |---|---|
-| `TRECHO_SNV_POSSIVELMENTE_INVERTIDO` | os vizinhos estão no extremo oposto ao esperado — o km sai espelhado dentro do trecho |
-| `TRECHO_SNV_CONTINUIDADE_CONTRADITORIA` | anterior e posterior tocam o mesmo extremo |
+| `Trecho SNV possivelmente invertido` | os vizinhos estão no extremo oposto ao esperado — o km sai espelhado dentro do trecho |
+| `Trecho SNV com continuidade contraditória` | anterior e posterior tocam o mesmo extremo |
 
 Vizinhos são trechos da mesma BR (prefixo do `vl_codigo`), com outro código,
 cujo km de emenda coincide ao metro e cujos extremos estão a até 1 m. Trecho
@@ -163,7 +182,7 @@ As funções sem dependência do QGIS são extraídas do script e exercitadas fo
 do ambiente QGIS:
 
 ```bash
-python3 testes/teste_funcoes_puras.py     # 75 verificações
+python3 testes/teste_funcoes_puras.py     # 112 verificações
 python3 testes/teste_classificacao.py     # 66 verificações
 ```
 

@@ -27,6 +27,7 @@
 #       - CAMPO_EXTENSAO ("Extensao (m)") : extensao da OAE em metros. Usada
 #         somente para dimensionar o raio de busca, nunca para decidir trecho.
 #       - CAMPO_VIA ("Via")               : rodovia declarada da OAE (ex.: BR-116).
+#       - CAMPO_RELACAO_SNV ("Relacao_SNV") : usado somente no campo Status.
 #
 #   Camada SNV (linear), nome em NOME_CAMADA_SNV:
 #       - CAMPO_VL_CODIGO   ("vl_codigo")  : codigo do trecho (ex.: 116BMG0450).
@@ -40,8 +41,8 @@
 #
 # 3. DADOS DE SAIDA
 # -----------------------------------------------------------------------------
-#   Camada em memoria NOME_CAMADA_SAIDA, com todos os campos originais da OAE
-#   mais os campos de resultado e auditoria:
+#   Camada em memoria NOME_CAMADA_SAIDA ("SGExSNV"), com todos os campos
+#   originais da OAE seguidos dos campos criados, nesta ordem:
 #
 #       Trecho_SNV  (texto)  codigo vl_codigo selecionado, ou NULL.
 #       Administracao (texto) ds_tipo_ad do trecho atribuido, ou NULL.
@@ -51,12 +52,8 @@
 #                            distancia da OAE - a mesma usada no calculo do km.
 #                            Ficam preenchidos ainda que o km nao possa ser
 #                            calculado, e NULL sempre que nao houver trecho.
+#                            Sao copia fiel do texto da SNV.
 #       km_SNV      (real)   quilometro interpolado, ou NULL.
-#       Dist_SNV_m  (real)   distancia planimetrica, em metros, entre a OAE e a
-#                            geometria do codigo selecionado (evidencia direta
-#                            da qualidade da associacao). NULL se nao associada.
-#       Raio_SNV    (real)   raio de busca aplicado aquela OAE, em metros.
-#       Qtd_Codigos (inteiro) quantidade de vl_codigo DISTINTOS dentro do raio.
 #       Rodovias_coincidentes (texto) numeros de BR (tres digitos) das rodovias
 #                            em SOBREPOSICAO COMPROVADA no local da OAE, isto e,
 #                            que ocupam o mesmo espaco parcial ou totalmente.
@@ -74,10 +71,25 @@
 #                            estejam digitalizadas com alguns centimetros de
 #                            diferenca nao satisfazem a equidistancia exigida e
 #                            nao aparecem aqui.
-#       Criterio    (texto)  um dos seis criterios da secao 5.
-#       Obs_SNV     (texto)  trilha de auditoria: distancias, margens, codigos
-#                            concorrentes, causas de empate, causas de nao
-#                            associacao e causas de km indeterminado.
+#       Status      (texto)  "Validado" ou "A validar", pela formula da planilha
+#                            de conferencia (ver status_validacao): Validado se
+#                            (Unico trecho e Relacao_SNV = "L") ou (Trecho
+#                            coincidente e Qtd_Codigos < 3). Nunca NULL.
+#       Criterio    (texto)  um dos seis criterios da secao 5, em texto
+#                            legivel (ex.: "Único trecho").
+#       Obs_SNV     (texto)  trilha de rastreabilidade em texto legivel:
+#                            distancias, margens, codigos concorrentes, causas
+#                            de empate, de nao associacao e de km indeterminado,
+#                            e avisos de trecho SNV suspeito.
+#       Dist_SNV_m  (real)   distancia planimetrica, em metros, entre a OAE e a
+#                            geometria do codigo selecionado (evidencia direta
+#                            da qualidade da associacao). NULL se nao associada.
+#       Raio_SNV    (real)   raio de busca aplicado aquela OAE, em metros.
+#       Qtd_Codigos (inteiro) quantidade de vl_codigo DISTINTOS dentro do raio.
+#
+#   Textos: internamente o script usa codigos estaveis (UNICO_TRECHO,
+#   VIA_OAE=116); na gravacao eles viram texto em portugues, com so a primeira
+#   letra maiuscula e as siglas preservadas (ver TEXTO_CRITERIO e TEXTO_OBS).
 #
 #   Alem da camada, o script imprime resumos conferidos por somatorias
 #   (associacao, quilometragem, rodovias coincidentes e situacao dos trechos
@@ -231,10 +243,11 @@ from qgis.core import (
 # -----------------------------------------------------------------------------
 NOME_CAMADA_OAE = "SGE"
 NOME_CAMADA_SNV = "SNV_202607A"
-NOME_CAMADA_SAIDA = "SGExSNV_trecho-km"
+NOME_CAMADA_SAIDA = "SGExSNV"
 
 CAMPO_EXTENSAO = "Extensão (m)"
 CAMPO_VIA = "Via"
+CAMPO_RELACAO_SNV = "Relacao_SNV"
 
 CAMPO_VL_CODIGO = "vl_codigo"
 CAMPO_VL_KM_INIC = "vl_km_inic"
@@ -250,6 +263,7 @@ CAMPO_DIST_SNV = "Dist_SNV_m"
 CAMPO_RAIO_SNV = "Raio_SNV"
 CAMPO_QTD_CODIGOS = "Qtd_Codigos"
 CAMPO_RODOVIAS_COINC = "Rodovias_coincidentes"
+CAMPO_STATUS = "Status"
 CAMPO_CRITERIO = "Criterio"
 CAMPO_OBSERVACAO = "Obs_SNV"
 
@@ -504,14 +518,14 @@ def truncar_texto(texto, limite):
         Texto excedendo o comprimento declarado do campo e truncado em silencio
         - ou rejeitado - pelo provedor, o que faria a trilha de rastreabilidade
         desaparecer sem aviso. O corte e feito aqui, de forma deterministica, e
-        sinalizado com o marcador [TRUNCADO], de modo que a perda seja sempre
-        visivel no proprio dado.
+        sinalizado com o marcador "...[truncado]", de modo que a perda seja
+        sempre visivel no proprio dado.
     """
     if not texto:
         return None
     if len(texto) <= limite:
         return texto
-    marcador = "...[TRUNCADO]"
+    marcador = "...[truncado]"
     return texto[: limite - len(marcador)] + marcador
 
 
@@ -519,17 +533,178 @@ def observacao_texto(*partes):
     """Concatena fragmentos nao vazios da trilha de rastreabilidade.
 
     Retorna:
-        str com os fragmentos separados por "; ", limitada a TAMANHO_MAX_OBS, ou
-        None se nada houver a registrar.
+        str com os fragmentos separados por "; ", ou None se nada houver a
+        registrar. Os fragmentos sao codigos internos (ex.: "VIA_OAE=116"),
+        convertidos em texto legivel so na gravacao (texto_saida_obs).
 
     Hipotese metodologica:
         Os fragmentos sao passados em ordem decrescente de relevancia
         (causa da decisao primeiro, detalhes numericos depois), de modo que um
-        eventual truncamento preserve sempre a informacao essencial e o registre
-        de forma visivel com o marcador [TRUNCADO].
+        eventual truncamento, feito depois da conversao, preserve sempre a
+        informacao essencial.
     """
-    return truncar_texto("; ".join(parte for parte in partes if parte),
-                         TAMANHO_MAX_OBS)
+    return "; ".join(parte for parte in partes if parte) or None
+
+
+# -----------------------------------------------------------------------------
+# 1.0.1) TEXTOS GRAVADOS NA CAMADA DE SAIDA E STATUS
+# -----------------------------------------------------------------------------
+# Internamente o script trabalha com codigos estaveis (UNICO_TRECHO,
+# VIA_OAE=116): a logica, os contadores e o resumo do console dependem deles.
+# Na camada de saida eles sao trocados por texto em portugues, com so a
+# primeira letra maiuscula e as siglas preservadas (SNV, OAE, BR, km).
+
+TEXTO_CRITERIO = {
+    "SEM_TRECHO": "Sem trecho",
+    "UNICO_TRECHO": "Único trecho",
+    "TRECHO_DIVERGENTE": "Trecho divergente",
+    "TRECHO_EMPATE": "Trecho empate",
+    "TRECHO_COINCIDENTE": "Trecho coincidente",
+    "TRECHO_FRONTEIRA": "Trecho fronteira",
+}
+
+# Itens de Obs_SNV. Os que aparecem como CHAVE=valor viram "Rotulo: valor".
+TEXTO_OBS = {
+    # avisos e causas
+    "ADMINISTRACAO_DIVERGENTE_ENTRE_GEOMETRIAS": "Administração divergente entre geometrias",
+    "CODIGOS_COINCIDENTES_COMPATIVEIS_COM_VIA_EQUIDISTANTES_DA_OAE":
+        "Códigos coincidentes compatíveis com a via equidistantes da OAE",
+    "CODIGOS_COINCIDENTES_COMPATIVEIS_EQUIDISTANTES":
+        "Códigos coincidentes compatíveis equidistantes",
+    "CODIGOS_COMPATIVEIS_COM_VIA_EQUIDISTANTES_DA_OAE":
+        "Códigos compatíveis com a via equidistantes da OAE",
+    "CODIGOS_COMPATIVEIS_EQUIDISTANTES": "Códigos compatíveis equidistantes",
+    "COINCIDENCIA_ENTRE_CODIGOS_DA_MESMA_BR": "Coincidência entre códigos da mesma BR",
+    "EMPATE_DE_GEOMETRIAS_DO_MESMO_CODIGO": "Empate de geometrias do mesmo código",
+    "FALHA_NA_PROJECAO_OU_INTERPOLACAO": "Falha na projeção ou interpolação",
+    "GEOMETRIA_OAE_INVALIDA_OU_MULTIPONTO": "Geometria da OAE inválida ou multiponto",
+    "GEOMETRIA_SNV_AUSENTE": "Geometria SNV ausente",
+    "GEOMETRIA_SNV_COMPRIMENTO_NULO": "Geometria SNV de comprimento nulo",
+    "GEOMETRIA_SNV_MULTIPARTE": "Geometria SNV multiparte",
+    "GEOMETRIA_SNV_NAO_LINEAR": "Geometria SNV não linear",
+    "INTERVALO_KM_INVALIDO": "Intervalo de km inválido",
+    "JURISDICAO_DIVERGENTE_ENTRE_GEOMETRIAS": "Jurisdição divergente entre geometrias",
+    "PREPARO_DO_TRECHO_INCOMPLETO": "Preparo do trecho incompleto",
+    "SEM_CANDIDATO_NO_RAIO": "Sem candidato no raio",
+    "TRECHO_SNV_CONTINUIDADE_CONTRADITORIA": "Trecho SNV com continuidade contraditória",
+    "TRECHO_SNV_POSSIVELMENTE_INVERTIDO": "Trecho SNV possivelmente invertido",
+    "UNICO_CODIGO_INCOMPATIVEL_COM_VIA": "Único código incompatível com a via",
+    "VIA_AUSENTE_OU_NAO_NORMALIZAVEL": "Via ausente ou não normalizável",
+    # chaves de CHAVE=valor
+    "ALERTA_ESCALA_KM_GEOM": "Alerta de escala km/geometria",
+    "CODIGOS_EM_EMPATE": "Códigos em empate",
+    "CODIGOS_NO_RAIO": "Códigos no raio",
+    "CODIGO_NO_RAIO": "Código no raio",
+    "DESCARTADOS_NO_MINIMO": "Descartados na distância mínima",
+    "DIST_EQUIDISTANTE_M": "Distância comum (m)",
+    "DIST_M": "Distância (m)",
+    "DIST_MIN_M": "Distância mínima (m)",
+    "FEICOES_ALEM_DA_DISTANCIA_MAXIMA": "Feições além da distância máxima",
+    "FEICOES_SNV_SEM_CODIGO_NO_RAIO": "Feições SNV sem código no raio",
+    "FRACAO": "Fração",
+    "MARGEM_M": "Margem para o 2º compatível (m)",
+    "MIN_VIA_M": "Menor distância entre compatíveis (m)",
+    "N_CODIGOS": "Quantidade de códigos no raio",
+    "N_COMPATIVEIS": "Quantidade de códigos compatíveis",
+    "N_EMPATADOS": "Quantidade de códigos empatados",
+    "N_GEOMETRIAS": "Quantidade de geometrias empatadas",
+    "NENHUM_CODIGO_COMPATIVEL_COM_VIA": "Nenhum código compatível com a via",
+    "PREFIXO_CODIGO": "Prefixo do código",
+    "PROJECAO_NO_EXTREMO": "Projeção no extremo",
+    "RAIO_M": "Raio (m)",
+    "SOBREPOSICAO_COM": "Sobreposição com",
+    "VIA_OAE": "Via da OAE",
+}
+
+# Valores textuais que aparecem depois do "=".
+TEXTO_VALOR_OBS = {
+    "AUSENTE": "ausente",
+    "INDEFINIDO": "indefinido",
+    "INICIO_GEOM": "início da geometria",
+    "FIM_GEOM": "fim da geometria",
+}
+
+STATUS_VALIDADO = "Validado"
+STATUS_A_VALIDAR = "A validar"
+
+
+def texto_generico(codigo):
+    """Converte um codigo sem frase propria: minusculas, espacos, inicial maiuscula.
+
+    Rede de seguranca para que nada saia em caixa alta na camada de saida;
+    todo codigo emitido pelo script deve ter frase propria em TEXTO_OBS (ha
+    teste que verifica isso).
+    """
+    texto = codigo.replace("_", " ").lower()
+    return texto[:1].upper() + texto[1:]
+
+
+def texto_saida_obs(observacao):
+    """Converte a observacao interna em texto legivel e a ajusta ao campo.
+
+    Parametros:
+        observacao: itens internos separados por "; " (ex.:
+            "TRECHO_SNV_POSSIVELMENTE_INVERTIDO; VIA_OAE=116"), ou None.
+
+    Retorna:
+        Texto legivel ("Trecho SNV possivelmente invertido; Via da OAE: 116"),
+        limitado a TAMANHO_MAX_OBS, ou None.
+
+    Hipotese metodologica:
+        Valores numericos e codigos SNV nao sao alterados. O truncamento ocorre
+        DEPOIS da conversao porque as frases sao um pouco mais longas que os
+        codigos; truncar antes cortaria um item ao meio.
+    """
+    # Atributo nunca preenchido chega como NULL do QGIS, que nao e str.
+    if not isinstance(observacao, str) or not observacao:
+        return None
+    itens = []
+    for item in observacao.split("; "):
+        chave, separador, valor = item.partition("=")
+        rotulo = TEXTO_OBS.get(chave) or texto_generico(chave)
+        if separador:
+            itens.append(f"{rotulo}: {TEXTO_VALOR_OBS.get(valor, valor)}")
+        else:
+            itens.append(rotulo)
+    return truncar_texto("; ".join(itens), TAMANHO_MAX_OBS)
+
+
+def texto_saida_criterio(criterio):
+    """Texto legivel do criterio para a camada de saida (ex.: "Único trecho")."""
+    if not isinstance(criterio, str) or not criterio:
+        return None
+    return TEXTO_CRITERIO.get(criterio) or texto_generico(criterio)
+
+
+def status_validacao(criterio, relacao_snv, qtd_codigos):
+    """Reproduz a formula de validacao da planilha de conferencia.
+
+    Formula de origem:
+        =SE(OU(E(Criterio="UNICO_TRECHO"; Relacao_SNV="L");
+               E(Criterio="TRECHO_COINCIDENTE"; Qtd_Codigos<3));
+            "VALIDADO"; "A VALIDAR")
+
+    Parametros:
+        criterio: codigo INTERNO do criterio (ex.: "UNICO_TRECHO").
+        relacao_snv: valor bruto do campo Relacao_SNV da OAE.
+        qtd_codigos: quantidade de vl_codigo distintos no raio.
+
+    Retorna:
+        STATUS_VALIDADO ou STATUS_A_VALIDAR; nunca None.
+
+    Hipoteses metodologicas:
+        - A comparacao usa o codigo interno do criterio, e nao o texto exibido,
+          para nao depender da redacao gravada na camada.
+        - Relacao_SNV e comparado com "L" sem distinguir maiusculas, como o
+          Excel, e tambem sem espacos nas bordas - nesse ponto difere do Excel,
+          que considera " L" diferente de "L". Valor vazio ou nulo nao e "L".
+    """
+    relacao = codigo_valido(relacao_snv)
+    validado = (
+        (criterio == "UNICO_TRECHO" and relacao is not None and relacao.upper() == "L")
+        or (criterio == "TRECHO_COINCIDENTE" and qtd_codigos is not None and qtd_codigos < 3)
+    )
+    return STATUS_VALIDADO if validado else STATUS_A_VALIDAR
 
 
 # -----------------------------------------------------------------------------
@@ -1009,7 +1184,7 @@ if camada_snv.geometryType() != QgsWkbTypes.LineGeometry:
 campos_oae = {campo.name() for campo in camada_oae.fields()}
 campos_snv = {campo.name() for campo in camada_snv.fields()}
 
-obrigatorios_oae = {CAMPO_EXTENSAO, CAMPO_VIA}
+obrigatorios_oae = {CAMPO_EXTENSAO, CAMPO_VIA, CAMPO_RELACAO_SNV}
 obrigatorios_snv = {
     CAMPO_VL_CODIGO, CAMPO_VL_KM_INIC, CAMPO_VL_KM_FINA,
     CAMPO_ADMIN_SNV, CAMPO_JURIS_SNV,
@@ -1027,12 +1202,13 @@ campos_novos = {
     CAMPO_ADMINISTRACAO,
     CAMPO_JURISDICAO,
     CAMPO_KM_SNV,
+    CAMPO_RODOVIAS_COINC,
+    CAMPO_STATUS,
+    CAMPO_CRITERIO,
+    CAMPO_OBSERVACAO,
     CAMPO_DIST_SNV,
     CAMPO_RAIO_SNV,
     CAMPO_QTD_CODIGOS,
-    CAMPO_RODOVIAS_COINC,
-    CAMPO_CRITERIO,
-    CAMPO_OBSERVACAO,
 }
 # Colisao de nomes duplicaria colunas na saida e tornaria ambiguo qual delas
 # contem o resultado desta execucao.
@@ -1408,16 +1584,20 @@ TAMANHO_JURISDICAO = comprimento_origem(CAMPO_JURIS_SNV)
 
 provedor_saida.addAttributes(
     [
+        # Ordem definida pelo responsavel: primeiro o resultado (trecho, seus
+        # atributos, km, coincidencia, validacao, criterio e observacao), depois
+        # os dados de apoio a conferencia.
         QgsField(CAMPO_TRECHO_SNV, QVariant.String, len=80),
         QgsField(CAMPO_ADMINISTRACAO, QVariant.String, len=TAMANHO_ADMINISTRACAO),
         QgsField(CAMPO_JURISDICAO, QVariant.String, len=TAMANHO_JURISDICAO),
         QgsField(CAMPO_KM_SNV, QVariant.Double, len=20, prec=3),
+        QgsField(CAMPO_RODOVIAS_COINC, QVariant.String, len=TAMANHO_MAX_RODOVIAS),
+        QgsField(CAMPO_STATUS, QVariant.String, len=20),
+        QgsField(CAMPO_CRITERIO, QVariant.String, len=30),
+        QgsField(CAMPO_OBSERVACAO, QVariant.String, len=TAMANHO_MAX_OBS),
         QgsField(CAMPO_DIST_SNV, QVariant.Double, len=20, prec=3),
         QgsField(CAMPO_RAIO_SNV, QVariant.Double, len=20, prec=3),
         QgsField(CAMPO_QTD_CODIGOS, QVariant.Int),
-        QgsField(CAMPO_RODOVIAS_COINC, QVariant.String, len=TAMANHO_MAX_RODOVIAS),
-        QgsField(CAMPO_CRITERIO, QVariant.String, len=30),
-        QgsField(CAMPO_OBSERVACAO, QVariant.String, len=TAMANHO_MAX_OBS),
     ]
 )
 saida.updateFields()
@@ -1430,6 +1610,7 @@ idx_dist = saida.fields().indexOf(CAMPO_DIST_SNV)
 idx_raio = saida.fields().indexOf(CAMPO_RAIO_SNV)
 idx_qtd = saida.fields().indexOf(CAMPO_QTD_CODIGOS)
 idx_rodovias_coinc = saida.fields().indexOf(CAMPO_RODOVIAS_COINC)
+idx_status = saida.fields().indexOf(CAMPO_STATUS)
 idx_criterio = saida.fields().indexOf(CAMPO_CRITERIO)
 idx_observacao = saida.fields().indexOf(CAMPO_OBSERVACAO)
 
@@ -1456,6 +1637,7 @@ contagem.update(
 )
 
 novas_feicoes = []
+contagem_status = Counter()
 motivos_km_nulo = Counter()
 motivos_sem_associacao = Counter()
 
@@ -1487,8 +1669,10 @@ for oae in camada_oae.getFeatures():
         criterio = "SEM_TRECHO"
         nova.setAttribute(idx_qtd, 0)
         nova.setAttribute(idx_criterio, criterio)
+        nova.setAttribute(idx_status, status_validacao(criterio, oae[CAMPO_RELACAO_SNV], 0))
         nova.setAttribute(idx_observacao, "GEOMETRIA_OAE_INVALIDA_OU_MULTIPONTO")
         contagem[criterio] += 1
+        contagem_status[STATUS_A_VALIDAR] += 1
         motivos_sem_associacao["SEM_TRECHO:GEOMETRIA_OAE_INVALIDA_OU_MULTIPONTO"] += 1
         novas_feicoes.append(nova)
         continue
@@ -1553,9 +1737,9 @@ for oae in camada_oae.getFeatures():
     if qtd_codigos == 0:
         observacao = observacao_texto(
             observacao,
-            f"{feicoes_sem_codigo_no_raio}_FEICOES_SNV_SEM_CODIGO_NO_RAIO"
+            f"FEICOES_SNV_SEM_CODIGO_NO_RAIO={feicoes_sem_codigo_no_raio}"
             if feicoes_sem_codigo_no_raio else None,
-            f"{feicoes_alem_do_limite}_FEICOES_ALEM_DA_DISTANCIA_MAXIMA"
+            f"FEICOES_ALEM_DA_DISTANCIA_MAXIMA={feicoes_alem_do_limite}"
             if feicoes_alem_do_limite else None,
             "N_CODIGOS=0",
             f"RAIO_M={raio_procura:.3f}",
@@ -1584,6 +1768,11 @@ for oae in camada_oae.getFeatures():
 
     nova.setAttribute(idx_criterio, criterio)
     contagem[criterio] += 1
+    # Status depende so do criterio, de Relacao_SNV e de Qtd_Codigos, todos ja
+    # definidos aqui; o calculo do km, mais adiante, nao o altera.
+    status = status_validacao(criterio, oae[CAMPO_RELACAO_SNV], qtd_codigos)
+    nova.setAttribute(idx_status, status)
+    contagem_status[status] += 1
 
     if codigo_escolhido is None:
         nova.setAttribute(idx_observacao, observacao)
@@ -1703,6 +1892,12 @@ for oae in camada_oae.getFeatures():
     novas_feicoes.append(nova)
 
 
+# Conversao dos codigos internos em texto legivel, num unico ponto, depois de
+# toda a logica e de todos os contadores terem usado os codigos.
+for nova in novas_feicoes:
+    nova.setAttribute(idx_criterio, texto_saida_criterio(nova[idx_criterio]))
+    nova.setAttribute(idx_observacao, texto_saida_obs(nova[idx_observacao]))
+
 if not provedor_saida.addFeatures(novas_feicoes)[0] or saida.featureCount() != contagem["TOTAL"]:
     raise RuntimeError("Falha na gravacao das OAEs na camada de saida.")
 saida.updateExtents()
@@ -1726,6 +1921,7 @@ if (
     soma_grupos != contagem["TOTAL"] or soma_km != associadas
     or sum(motivos_km_nulo.values()) != contagem["KM_NAO_DETERMINADO"]
     or sum(motivos_sem_associacao.values()) != sem_associacao
+    or sum(contagem_status.values()) != contagem["TOTAL"]
 ):
     raise RuntimeError("Inconsistencia nas somatorias dos resumos.")
 
@@ -1739,6 +1935,8 @@ print(f"Total de OAEs:                         {contagem['TOTAL']}")
 print(f"Associadas a um codigo SNV:            {associadas}")
 print(f"Sem codigo SNV atribuido:              {sem_associacao}")
 print(f"Conferencia: {associadas} + {sem_associacao} = {contagem['TOTAL']}")
+print(f"Status {STATUS_VALIDADO}:                     {contagem_status[STATUS_VALIDADO]}")
+print(f"Status {STATUS_A_VALIDAR}:                    {contagem_status[STATUS_A_VALIDAR]}")
 print("Causas da nao associacao (criterio : causa):")
 for motivo, quantidade in sorted(motivos_sem_associacao.items()):
     criterio_motivo, _, causa_motivo = motivo.partition(":")

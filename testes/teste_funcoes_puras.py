@@ -9,9 +9,11 @@ alvos = {"numero_finito_positivo", "numero_finito", "normalizar_via",
          "prefixo_codigo", "quase_igual", "formatar_lista_codigos",
          "truncar_texto", "observacao_texto", "interpolar_km",
          "preparar_trechos", "diagnosticar_sentido",
-         "diagnosticar_trechos", "prefixo_codigo"}
+         "diagnosticar_trechos", "prefixo_codigo", "texto_generico",
+         "texto_saida_obs", "texto_saida_criterio", "status_validacao"}
 consts = {"TAMANHO_MAX_OBS", "LIMITE_CODIGOS_LISTADOS", "TOLERANCIA_CONEXAO_M",
-          "CASAS_DECIMAIS_KM", "CAMPO_VL_CODIGO",
+          "CASAS_DECIMAIS_KM", "CAMPO_VL_CODIGO", "TEXTO_CRITERIO", "TEXTO_OBS",
+          "TEXTO_VALOR_OBS", "STATUS_VALIDADO", "STATUS_A_VALIDAR",
           "CAMPO_VL_KM_INIC",
           "CAMPO_VL_KM_FINA"}
 
@@ -62,12 +64,107 @@ checa("lista curta", g["formatar_lista_codigos"](["b", "a"]), "a,b")
 checa("lista longa", g["formatar_lista_codigos"]([f"c{i}" for i in range(9)], 3),
       "c0,c1,c2,+6")
 
-# --- truncamento da observacao ---
-longo = g["observacao_texto"]("X" * 400)
-checa("obs truncada", len(longo), g["TAMANHO_MAX_OBS"])
-assert longo.endswith("...[TRUNCADO]")
+# --- montagem da observacao (codigos internos, sem truncar) ---
 checa("obs vazia", g["observacao_texto"](None, ""), None)
 checa("obs ordem", g["observacao_texto"]("A", None, "B"), "A; B")
+checa("obs nao trunca: so a gravacao trunca",
+      len(g["observacao_texto"]("X" * 400)), 400)
+
+# --- textos gravados na camada de saida ---
+T = g["texto_saida_obs"]
+checa("aviso simples", T("TRECHO_SNV_POSSIVELMENTE_INVERTIDO"),
+      "Trecho SNV possivelmente invertido")
+checa("chave=valor numerico", T("VIA_OAE=116"), "Via da OAE: 116")
+checa("chave=valor textual", T("PROJECAO_NO_EXTREMO=INICIO_GEOM"),
+      "Projeção no extremo: início da geometria")
+checa("valor ausente", T("VIA_OAE=AUSENTE"), "Via da OAE: ausente")
+checa("varios itens", T("VIA_AUSENTE_OU_NAO_NORMALIZAVEL; N_CODIGOS=3"),
+      "Via ausente ou não normalizável; Quantidade de códigos no raio: 3")
+checa("codigos SNV preservados", T("SOBREPOSICAO_COM=101BMG0330,222BMG0010"),
+      "Sobreposição com: 101BMG0330,222BMG0010")
+checa("numero preservado", T("DIST_MIN_M=3.000000"), "Distância mínima (m): 3.000000")
+checa("chave desconhecida -> generico", T("ALGO_NOVO_SNV=7"), "Algo novo snv: 7")
+checa("obs vazia -> None", T(None), None)
+checa("obs NULL do QGIS -> None", T(object()), None)
+# Truncamento DEPOIS da conversao, com marcador em minusculas.
+longa = T("; ".join(["TRECHO_SNV_POSSIVELMENTE_INVERTIDO"] * 20))
+checa("obs truncada no limite", len(longa), g["TAMANHO_MAX_OBS"])
+checa("marcador em minusculas", longa.endswith("...[truncado]"), True)
+
+C = g["texto_saida_criterio"]
+for codigo, texto in [("SEM_TRECHO", "Sem trecho"), ("UNICO_TRECHO", "Único trecho"),
+                      ("TRECHO_DIVERGENTE", "Trecho divergente"),
+                      ("TRECHO_EMPATE", "Trecho empate"),
+                      ("TRECHO_COINCIDENTE", "Trecho coincidente"),
+                      ("TRECHO_FRONTEIRA", "Trecho fronteira")]:
+    checa(f"criterio {codigo}", C(codigo), texto)
+checa("criterio NULL do QGIS -> None", C(object()), None)
+
+# Nenhum texto gravado pode ter palavra inteira em maiusculas, salvo siglas.
+SIGLAS = {"SNV", "OAE", "BR"}
+gravados = (list(g["TEXTO_CRITERIO"].values()) + list(g["TEXTO_OBS"].values())
+            + list(g["TEXTO_VALOR_OBS"].values())
+            + [g["STATUS_VALIDADO"], g["STATUS_A_VALIDAR"]])
+for texto in gravados:
+    for palavra in re.findall(r"[A-Za-zÀ-ÿ]{2,}", texto):
+        assert not (palavra.isupper() and palavra not in SIGLAS), (texto, palavra)
+    assert texto[0] == texto[0].upper() or texto in g["TEXTO_VALOR_OBS"].values(), texto
+ok += 1
+
+# Todo codigo que o script pode gravar em Obs_SNV tem frase propria: varre o
+# codigo-fonte atras de literais em maiusculas e exige que cada um seja item
+# de Obs_SNV, criterio, valor, ou um uso interno conhecido (contadores etc.).
+docstrings = set()
+for no in ast.walk(arvore):
+    if isinstance(no, (ast.Module, ast.FunctionDef, ast.ClassDef)) and no.body \
+            and isinstance(no.body[0], ast.Expr) \
+            and isinstance(no.body[0].value, ast.Constant):
+        docstrings.add(id(no.body[0].value))
+literais = set()
+for no in ast.walk(arvore):
+    if isinstance(no, ast.Constant) and isinstance(no.value, str) \
+            and id(no) not in docstrings:
+        s = no.value
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{3,}", s):
+            literais.add(s)                                  # "AVISO"
+        m = re.fullmatch(r"([A-Z][A-Z0-9_]{2,})=([A-Z][A-Z_]*)?", s)
+        if m:                                                # "CHAVE=" / "CHAVE=VALOR"
+            literais.add(m.group(1))
+            if m.group(2):
+                literais.add(m.group(2))
+USO_INTERNO = {  # contadores, chaves do resumo do console, sentinelas e nomes
+    "ALERTA_ESCALA", "ALERTA_EXTREMO", "APTO_AO_CALCULO_DO_KM",
+    "ATRIBUTO_TRECHO_DIVERGENTE", "COINCIDENCIA_DETECTADA", "COINCIDENCIA_MESMA_BR",
+    "KM_CALCULADO", "KM_EM_TRECHO_SUSPEITO", "KM_NAO_DETERMINADO", "TOTAL",
+    "VIA_NAO_NORMALIZAVEL", "NAO_INFORMADA", "NULL", "NONE", "NAN", "SNV_202607A",
+}
+# A varredura precisa de fato enxergar os itens gravados; sem isso, um teste
+# "sem pendencias" passaria tambem com a varredura quebrada.
+for esperado in ("VIA_OAE", "FEICOES_SNV_SEM_CODIGO_NO_RAIO", "INICIO_GEOM",
+                 "TRECHO_SNV_POSSIVELMENTE_INVERTIDO", "AUSENTE", "UNICO_TRECHO"):
+    assert esperado in literais, esperado
+ok += 1
+sem_frase = sorted(literais - set(g["TEXTO_OBS"]) - set(g["TEXTO_CRITERIO"])
+                   - set(g["TEXTO_VALOR_OBS"]) - USO_INTERNO)
+checa("todo item de Obs_SNV tem frase propria", sem_frase, [])
+
+# --- Status: formula da planilha ---
+S = g["status_validacao"]
+V, AV = g["STATUS_VALIDADO"], g["STATUS_A_VALIDAR"]
+checa("unico trecho + L", S("UNICO_TRECHO", "L", 1), V)
+checa("unico trecho + l minusculo", S("UNICO_TRECHO", "l", 1), V)
+checa("unico trecho + L com espacos", S("UNICO_TRECHO", " L ", 1), V)
+checa("unico trecho + outro valor", S("UNICO_TRECHO", "X", 1), AV)
+checa("unico trecho + vazio", S("UNICO_TRECHO", "", 1), AV)
+checa("unico trecho + nulo", S("UNICO_TRECHO", None, 1), AV)
+checa("coincidente + 2 codigos", S("TRECHO_COINCIDENTE", None, 2), V)
+checa("coincidente + 3 codigos", S("TRECHO_COINCIDENTE", None, 3), AV)
+checa("coincidente + 5 codigos e L", S("TRECHO_COINCIDENTE", "L", 5), AV)
+checa("L so vale para unico trecho", S("TRECHO_FRONTEIRA", "L", 1), AV)
+checa("poucos codigos so vale para coincidente", S("TRECHO_FRONTEIRA", None, 1), AV)
+for criterio in ("SEM_TRECHO", "TRECHO_DIVERGENTE", "TRECHO_EMPATE"):
+    checa(f"{criterio} -> a validar", S(criterio, "L", 0), AV)
+checa("compara codigo interno, nao texto exibido", S("Único trecho", "L", 1), AV)
 
 # --- interpolacao do km pelo sentido de digitalizacao ---
 I = g["interpolar_km"]
