@@ -16,9 +16,8 @@ Para cada OAE da camada SGE, executa duas etapas encadeadas:
    (`vl_codigo`) ao qual a OAE pertence, ou registra explicitamente por que isso
    não foi possível.
 2. **Quilometragem** — calcula o quilômetro da OAE (`km_SNV`) dentro do trecho
-   selecionado, por interpolação linear entre `vl_km_inic` e `vl_km_fina`. O
-   sentido crescente do km é o sentido em que a linha do trecho está
-   digitalizada.
+   selecionado, por interpolação linear entre `vl_km_inic` e `vl_km_fina`, no
+   sentido em que a linha do trecho está digitalizada.
 
 O procedimento é **determinístico**: o resultado não depende da ordem de leitura
 das feições em nenhuma das camadas. Toda decisão exige um vencedor único; onde
@@ -44,13 +43,13 @@ espaços, e também pelo alias exibido na tabela de atributos: `Versão SNV` e
 mensagem de erro lista os campos da camada e os mais parecidos.
 
 A extensão da OAE serve apenas para dimensionar o raio de busca — nunca para
-decidir o trecho. Cada trecho SNV deve estar digitalizado no sentido crescente
-do km: o primeiro vértice corresponde a `vl_km_inic` e o último a `vl_km_fina`.
+decidir o trecho. Em cada trecho SNV, o primeiro vértice da linha corresponde a
+`vl_km_inic` e o último a `vl_km_fina`.
 
 ## Saída
 
 Uma camada em memória chamada **`SGExSNV`** com os campos originais da OAE
-seguidos de doze campos criados, nesta ordem:
+seguidos de onze campos criados, nesta ordem:
 
 | Campo | Tipo | Conteúdo |
 |---|---|---|
@@ -62,14 +61,13 @@ seguidos de doze campos criados, nesta ordem:
 | `Rodovias_coincidentes` | texto | BRs em **sobreposição comprovada** no local (ex.: `116;101`); NULL sem coincidência |
 | `Status` | texto | `Validado` ou `A validar` (ver abaixo) |
 | `Criterio` | texto | um dos seis critérios abaixo, em texto legível |
-| `Obs_SNV` | texto | trilha de rastreabilidade: distâncias, margens, códigos concorrentes, causas e avisos |
 | `Dist_SNV_m` | real | distância, em metros, da OAE ao trecho atribuído |
-| `Raio_SNV` | real | raio de busca aplicado àquela OAE |
+| `Raio_SNV` | real | raio de busca efetivamente usado para a OAE (fator 2 ou 5) |
 | `Qtd_Codigos` | inteiro | quantidade de `vl_codigo` distintos no raio |
 
-Os textos de `Criterio`, `Status` e `Obs_SNV` saem em português, com só a
-primeira letra maiúscula e as siglas preservadas — por exemplo
-`Trecho SNV possivelmente invertido; Via da OAE: 116`.
+Os textos de `Criterio` e `Status` saem em português, com só a primeira letra
+maiúscula. As causas de não associação e de km nulo não vão para a camada:
+aparecem, contadas, no resumo do console.
 
 ### Status
 
@@ -94,11 +92,12 @@ com esse nome exato, o console avisa.
 `Trecho_SNV` é atribuído, da feição do código mais próxima da OAE. Ficam
 preenchidos mesmo quando o km não pode ser calculado. Se duas feições do mesmo
 código estiverem à mesma distância e discordarem nesses valores, o campo fica
-NULL e a divergência é registrada em `Obs_SNV`.
+NULL e a divergência é contada no resumo do console.
 
-O script também imprime resumos conferidos por somatórias: associação,
-quilometragem, rodovias coincidentes e situação dos trechos SNV para o cálculo
-do km.
+O script também imprime resumos conferidos por somatórias: associação (com
+as causas de cada OAE sem trecho e quantas precisaram do raio ampliado),
+quilometragem (com as causas de km nulo), rodovias coincidentes e situação dos
+trechos SNV para o cálculo do km.
 
 ## Critérios de classificação
 
@@ -106,7 +105,7 @@ Mutuamente exclusivos e exaustivos, avaliados **nesta ordem**:
 
 | Critério | Condição |
 |---|---|
-| Sem trecho | geometria da OAE inválida, ou nenhum `vl_codigo` válido dentro do raio |
+| Sem trecho | geometria da OAE inválida, ou nenhum `vl_codigo` válido dentro do raio, nem com o fator ampliado |
 | Trecho único | exatamente um código no raio, **e** compatível com a `Via` |
 | Trecho divergente | nenhum código do raio é compatível com a `Via`, ou a `Via` está ausente |
 | Trecho empate | dois ou mais códigos compatíveis à **mesma distância** da OAE |
@@ -120,47 +119,32 @@ admissão.
 
 ## Cálculo do km
 
-Os trechos do SNV são `LineString` digitalizadas no sentido crescente da rota,
-então a própria ordem dos vértices define o sentido do km. Não há consulta a
-trechos vizinhos nem a outros atributos.
+Atribuído o trecho, o sentido do km é o da própria `LineString`: o primeiro
+vértice é `vl_km_inic` e o último, `vl_km_fina`. Não há consulta a trechos
+vizinhos, tolerâncias nem confronto entre os dados tabulares e a geometria —
+essa análise é feita em outra atividade. O que se garante aqui é a coerência
+entre o km calculado e os dados do trecho associado.
 
-Atribuído o trecho, a OAE é projetada ortogonalmente sobre a linha e obtém-se
-sua posição relativa (`fração`), de 0 no primeiro vértice a 1 no último:
+A OAE é projetada ortogonalmente sobre a linha e obtém-se sua posição relativa
+(`fração`), de 0 no primeiro vértice a 1 no último:
 
 ```
 km_SNV = vl_km_inic + fração × (vl_km_fina − vl_km_inic)
 ```
 
-O km fica NULL, com a causa registrada em `Obs_SNV`, quando:
+O km fica sempre dentro do intervalo do trecho. Se `vl_km_fina` for menor que
+`vl_km_inic`, o km continua sendo calculado pela mesma fórmula e decresce ao
+longo da linha, coerente com o que o trecho declara.
 
+O km fica NULL somente quando não há como calculá-lo:
+
+- `vl_km_inic` ou `vl_km_fina` ausente;
+- a geometria tem duas ou mais partes — juntá-las poderia inverter a ordem dos
+  vértices e, com ela, o sentido;
 - duas feições do mesmo código estão à mesma distância da OAE;
-- o intervalo de km do trecho é inválido (ausente, negativo ou
-  `vl_km_fina` ≤ `vl_km_inic`);
-- a geometria tem duas ou mais partes (`Geometria SNV multiparte`) — juntá-las
-  poderia inverter a ordem dos vértices e, com ela, o sentido;
 - a projeção falha.
 
 Uma `MultiLineString` com uma única parte é aceita e usada como está.
-
-### Coerência com a SNV e aviso de sentido suspeito
-
-O km é coerente com a **geometria do trecho atribuído**. Se a SNV estiver
-errada, o km acompanha o erro; corrigida a SNV, uma nova execução corrige o km.
-
-Para que esses erros não passem em silêncio, cada trecho é comparado com a
-sequência de km dos vizinhos da mesma BR: o vizinho anterior deveria tocar o
-primeiro vértice e o posterior, o último. Quando isso não acontece, `Obs_SNV`
-recebe um aviso, **e o km continua sendo calculado pela geometria**:
-
-| Aviso | Situação |
-|---|---|
-| `Trecho SNV possivelmente invertido` | os vizinhos estão no extremo oposto ao esperado — o km sai espelhado dentro do trecho |
-| `Trecho SNV com continuidade contraditória` | anterior e posterior tocam o mesmo extremo |
-
-Vizinhos são trechos da mesma BR (prefixo do `vl_codigo`), com outro código,
-cujo km de emenda coincide ao metro e cujos extremos estão a até 1 m. Trecho
-sem vizinho não tem com o que ser comparado e não recebe aviso. O resumo do
-console mostra quantos trechos e quantas OAEs foram sinalizados.
 
 ## Como executar
 
@@ -179,13 +163,16 @@ Todos no início do arquivo:
 |---|---|---|
 | `CRS_METRICA` | EPSG:5880 | SRC de todas as medições |
 | `FATOR_RAIO` | 2.0 | multiplicador do raio de busca |
+| `FATOR_RAIO_AMPLIADO` | 5.0 | multiplicador usado só quando não há nenhum trecho no raio normal |
 | `TOLERANCIA_EMPATE_DISTANCIA_M` | 1e-8 | tolerância numérica de equidistância |
-| `TOLERANCIA_CONEXAO_M` | 1.0 | distância máxima entre extremos de trechos vizinhos (só no aviso de sentido) |
-| `DISTANCIA_MAXIMA_ASSOCIACAO_M` | `None` | limite duro opcional de associação (desativado) |
 
 O raio de busca de cada OAE é `max(extensão, mediana das extensões) ×
 FATOR_RAIO`. A mediana funciona como piso, protegendo obras com extensão
 ausente ou inválida sem inflar o raio das demais.
+
+Se nenhum `vl_codigo` estiver dentro desse raio, a busca é refeita com
+`FATOR_RAIO_AMPLIADO`. A ampliação vale só para esse caso: uma OAE que já tem
+trechos no raio normal, ainda que de outra BR, mantém o fator 2.
 
 ## Testes
 
@@ -193,13 +180,12 @@ As funções sem dependência do QGIS são extraídas do script e exercitadas fo
 do ambiente QGIS:
 
 ```bash
-python3 testes/teste_funcoes_puras.py     # 121 verificações
-python3 testes/teste_classificacao.py     # 66 verificações
+python3 testes/teste_funcoes_puras.py     # 133 verificações
+python3 testes/teste_classificacao.py     # 59 verificações
 ```
 
-Cobrem a normalização de dados, o preparo dos trechos, a interpolação do km e
-o aviso de sentido suspeito,
-os seis critérios e
+Cobrem a normalização de dados, o raio em duas etapas, o cálculo do km
+(inclusive com limites invertidos), os seis critérios e
 as invariantes do procedimento — entre elas a compatibilidade obrigatória com a
 `Via` e a independência do resultado frente à ordem de leitura das feições.
 
@@ -210,13 +196,12 @@ as invariantes do procedimento — entre elas a compatibilidade obrigatória com
 - **A compatibilidade compara apenas o número da BR**, não a UF embutida no
   `vl_codigo`. Em divisas estaduais, um trecho da mesma BR em UF vizinha é
   candidato válido.
-- **O sentido do km depende da digitalização.** Um trecho digitalizado contra
-  o km produz km espelhado dentro do trecho
-  (`vl_km_inic + vl_km_fina − km correto`). O caso é sinalizado em `Obs_SNV`
-  quando os vizinhos o evidenciam; um trecho isolado, sem vizinhos, passa sem
-  aviso.
+- **O sentido do km é o da digitalização.** Um trecho digitalizado contra o
+  km produz km espelhado dentro do trecho
+  (`vl_km_inic + vl_km_fina − km correto`), sem aviso: o km acompanha o dado
+  da SNV, e corrigida a SNV, uma nova execução corrige o km.
 - **A interpolação pressupõe proporcionalidade** entre comprimento geométrico e
-  quilometragem declarada. Desvios acima de 10% são sinalizados em `Obs_SNV`.
+  quilometragem declarada; desvios não são verificados nesta etapa.
 - **A detecção de coincidência espelha o critério.** Rodovias coincidentes com
   geometrias digitalizadas alguns centímetros distantes não satisfazem a
   equidistância exigida e não aparecem em `Rodovias_coincidentes`.
