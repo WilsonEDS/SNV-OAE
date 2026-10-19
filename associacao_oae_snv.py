@@ -27,7 +27,8 @@
 #     Rodovias_coincidentes BRs em sobreposicao comprovada no local (ex.:
 #                           "116;101"), a atribuida primeiro; NULL sem
 #                           coincidencia
-#     Status                "Validado" ou "A validar" (ver status_validacao)
+#     Status                "Validado" ou "A validar"; Relacao_SNV "T" ou "N"
+#                           e sempre "A validar" (ver status_validacao)
 #     Criterio              um dos seis criterios abaixo
 #     Dist_SNV_m            distancia, em metros, da OAE ao trecho atribuido
 #     Raio_SNV              raio de busca efetivamente usado, em metros
@@ -469,10 +470,11 @@ def indices_mantidos(campos, nomes_excluidos):
 def status_validacao(criterio, relacao_snv, qtd_codigos):
     """Reproduz a formula de validacao da planilha de conferencia.
 
-    Formula de origem:
-        =SE(OU(E(Criterio="UNICO_TRECHO"; Relacao_SNV="L");
-               E(Criterio="TRECHO_COINCIDENTE"; Qtd_Codigos<3));
-            "VALIDADO"; "A VALIDAR")
+    Formula:
+        =SE(OU(Relacao_SNV="T"; Relacao_SNV="N"); "A VALIDAR";
+            SE(OU(E(Criterio="UNICO_TRECHO"; Relacao_SNV="L");
+                  E(Criterio="TRECHO_COINCIDENTE"; Qtd_Codigos<3));
+               "VALIDADO"; "A VALIDAR"))
 
     Parametros:
         criterio: codigo INTERNO do criterio (ex.: "UNICO_TRECHO").
@@ -485,13 +487,18 @@ def status_validacao(criterio, relacao_snv, qtd_codigos):
     Hipoteses metodologicas:
         - A comparacao usa o codigo interno do criterio, e nao o texto exibido,
           para nao depender da redacao gravada na camada.
-        - Relacao_SNV e comparado com "L" sem distinguir maiusculas, como o
-          Excel, e tambem sem espacos nas bordas - nesse ponto difere do Excel,
-          que considera " L" diferente de "L". Valor vazio ou nulo nao e "L".
+        - Relacao_SNV "T" ou "N" tem prioridade: a OAE fica "A validar"
+          qualquer que seja o criterio.
+        - Relacao_SNV e comparado sem distinguir maiusculas, como o Excel, e
+          tambem sem espacos nas bordas - nesse ponto difere do Excel, que
+          considera " L" diferente de "L". Valor vazio ou nulo nao e "L".
     """
     relacao = codigo_valido(relacao_snv)
+    relacao = relacao.upper() if relacao is not None else None
+    if relacao in ("T", "N"):
+        return STATUS_A_VALIDAR
     validado = (
-        (criterio == "UNICO_TRECHO" and relacao is not None and relacao.upper() == "L")
+        (criterio == "UNICO_TRECHO" and relacao == "L")
         or (criterio == "TRECHO_COINCIDENTE" and qtd_codigos is not None and qtd_codigos < 3)
     )
     return STATUS_VALIDADO if validado else STATUS_A_VALIDAR

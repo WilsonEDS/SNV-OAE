@@ -176,6 +176,13 @@ checa("poucos codigos so vale para coincidente", S("TRECHO_FRONTEIRA", None, 1),
 for criterio in ("SEM_TRECHO", "TRECHO_DIVERGENTE", "TRECHO_EMPATE"):
     checa(f"{criterio} -> a validar", S(criterio, "L", 0), AV)
 checa("compara codigo interno, nao texto exibido", S("Trecho único", "L", 1), AV)
+# Relacao_SNV "T" ou "N" tem prioridade: sempre a validar.
+for relacao in ("T", "N", "t", "n", " T ", " N "):
+    checa(f"coincidente + 2 codigos + {relacao!r}", S("TRECHO_COINCIDENTE", relacao, 2), AV)
+    checa(f"unico trecho + {relacao!r}", S("UNICO_TRECHO", relacao, 1), AV)
+for relacao in ("L", "", None, "X", "TN"):
+    checa(f"coincidente + 2 codigos + {relacao!r} segue validado",
+          S("TRECHO_COINCIDENTE", relacao, 2), V)
 
 # --- interpolacao do km pelo sentido de digitalizacao ---
 I = g["interpolar_km"]

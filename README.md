@@ -74,14 +74,17 @@ aparecem, contadas, no resumo do console.
 Reproduz a fórmula da planilha de conferência:
 
 ```
-=SE(OU(E(Criterio="UNICO_TRECHO"; Relacao_SNV="L");
-       E(Criterio="TRECHO_COINCIDENTE"; Qtd_Codigos<3)); "VALIDADO"; "A VALIDAR")
+=SE(OU(Relacao_SNV="T"; Relacao_SNV="N"); "A VALIDAR";
+    SE(OU(E(Criterio="UNICO_TRECHO"; Relacao_SNV="L");
+          E(Criterio="TRECHO_COINCIDENTE"; Qtd_Codigos<3)); "VALIDADO"; "A VALIDAR"))
 ```
 
-`Validado` quando a OAE é de **trecho único** e `Relacao_SNV` = `L`, ou de
-**trecho coincidente** com menos de três códigos no raio; `A validar` em todos
-os demais casos. A comparação com `L` ignora maiúsculas e espaços nas bordas —
-neste último ponto difere do Excel, que considera `" L"` diferente de `"L"`.
+OAEs com `Relacao_SNV` = `T` ou `N` ficam sempre `A validar`, qualquer que
+seja o critério. Nas demais, `Validado` quando a OAE é de **trecho único** e
+`Relacao_SNV` = `L`, ou de **trecho coincidente** com menos de três códigos no
+raio; `A validar` em todos os outros casos. A comparação de `Relacao_SNV`
+ignora maiúsculas e espaços nas bordas — neste último ponto difere do Excel,
+que considera `" L"` diferente de `"L"`.
 
 As colunas `Km`, `Código SNV` e `Versão SNV` da SGE **não são copiadas**: vêm
 de uma associação anterior e são substituídas por `km_SNV`, `Trecho_SNV` e
@@ -180,7 +183,7 @@ As funções sem dependência do QGIS são extraídas do script e exercitadas fo
 do ambiente QGIS:
 
 ```bash
-python3 testes/teste_funcoes_puras.py     # 133 verificações
+python3 testes/teste_funcoes_puras.py     # 150 verificações
 python3 testes/teste_classificacao.py     # 59 verificações
 ```
 
