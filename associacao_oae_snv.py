@@ -18,15 +18,17 @@
 #
 # SAIDA - camada em memoria "SGExSNV"
 #   Campos da SGE, exceto "Km", "Código SNV" e "Versão SNV" (de uma associacao
-#   anterior, substituidos pelos calculados aqui), seguidos de:
+#   anterior, substituidos pelos calculados aqui), na ordem original, com dois
+#   campos novos intercalados:
+#     Rodovias_coincidentes (logo apos "Via") BRs em sobreposicao comprovada no
+#                           local (ex.: "116;101"), a atribuida primeiro; NULL
+#                           sem coincidencia
+#     km_SNV (logo apos "UF") km interpolado, com 2 casas, ou NULL
+#   seguidos de:
 #     Trecho_SNV            vl_codigo atribuido, ou NULL
 #     Versao_SNV            versao_snv do trecho atribuido
 #     Administracao         ds_tipo_ad do trecho atribuido
 #     Jurisdicao            ds_jurisdi do trecho atribuido
-#     km_SNV                km interpolado, ou NULL
-#     Rodovias_coincidentes BRs em sobreposicao comprovada no local (ex.:
-#                           "116;101"), a atribuida primeiro; NULL sem
-#                           coincidencia
 #     Status                "Validado" ou "A validar"; Relacao_SNV "T" ou "N"
 #                           e sempre "A validar" (ver status_validacao)
 #     Criterio              um dos seis criterios abaixo
@@ -45,10 +47,15 @@
 #        Sem trecho          nenhum codigo no raio (ou geometria da OAE invalida)
 #        Trecho único        um so codigo no raio, compativel com a Via
 #        Trecho divergente   nenhum codigo do raio compativel com a Via
-#        Trecho empate       2+ codigos compativeis a mesma distancia
 #        Trecho coincidente  vencedor que compartilha porcao linear, na posicao
 #                            da OAE, com outro codigo equidistante
-#        Trecho fronteira    vencedor unico por menor distancia
+#        Trecho fronteira    vencedor por menor distancia, sem coincidencia
+#        Trecho empate       2+ codigos compativeis a mesma distancia que nem o
+#                            desempate separa
+#      Empate entre compativeis equidistantes: vence o maior numero do codigo
+#      (4 ultimos digitos); se igual, o trecho seguinte no sentido da rodovia
+#      (a OAE no inicio da LineString). O escolhido e classificado como
+#      coincidente ou fronteira.
 #      Compatibilidade com a Via (BR = 3 primeiros digitos do vl_codigo) e
 #      pre-condicao: nenhum codigo de outra BR e atribuido.
 #   e) km = vl_km_inic + fracao x (vl_km_fina - vl_km_inic), com fracao = posicao
@@ -98,6 +105,7 @@ NOME_CAMADA_SAIDA = "SGExSNV"
 CAMPO_EXTENSAO = "Extensão (m)"
 CAMPO_VIA = "Via"
 CAMPO_RELACAO_SNV = "Relacao_SNV"
+CAMPO_UF = "UF"  # opcional: so posiciona km_SNV na saida
 CAMPO_VL_CODIGO = "vl_codigo"
 CAMPO_VL_KM_INIC = "vl_km_inic"
 CAMPO_VL_KM_FINA = "vl_km_fina"
@@ -138,6 +146,13 @@ FATOR_RAIO_AMPLIADO = 5.0
 
 # Tolerancia numerica para tratar duas distancias como iguais.
 TOLERANCIA_EMPATE_DISTANCIA_M = 1e-8
+
+# Tolerancia para considerar iguais as posicoes relativas (0 a 1) da OAE em dois
+# trechos empatados, no desempate pelo trecho seguinte.
+TOLERANCIA_EMPATE_FRACAO = 1e-9
+
+# Casas decimais gravadas em km_SNV.
+CASAS_DECIMAIS_KM = 2
 
 # Comprimento maximo de campos de texto (seguro para Shapefile/DBF).
 TAMANHO_MAX_TEXTO = 254
@@ -467,6 +482,31 @@ def indices_mantidos(campos, nomes_excluidos):
     return indices, retirar, nao_encontrados
 
 
+def ordem_colunas(colunas_oae, campos_novos, ancoras):
+    """Ordem das colunas da camada de saida.
+
+    Parametros:
+        colunas_oae: [(indice, nome)] das colunas da SGE copiadas, na ordem
+            original.
+        campos_novos: nomes dos campos criados, na ordem padrao.
+        ancoras: campo novo -> nome da coluna da SGE apos a qual ele entra.
+
+    Retorna:
+        Lista de ("oae", indice) e ("novo", nome). As colunas da SGE mantem a
+        ordem original; cada campo ancorado entra logo apos a sua coluna; os
+        demais campos novos (e os ancorados cuja coluna nao existe) seguem no
+        fim, na ordem padrao.
+    """
+    nomes_oae = {nome for _, nome in colunas_oae}
+    posicionados = {campo: ancora for campo, ancora in ancoras.items() if ancora in nomes_oae}
+    ordem = []
+    for indice, nome in colunas_oae:
+        ordem.append(("oae", indice))
+        ordem.extend(("novo", c) for c in campos_novos if posicionados.get(c) == nome)
+    ordem.extend(("novo", c) for c in campos_novos if c not in posicionados)
+    return ordem
+
+
 def status_validacao(criterio, relacao_snv, qtd_codigos):
     """Reproduz a formula de validacao da planilha de conferencia.
 
@@ -625,10 +665,9 @@ def rodovias_coincidentes_texto(coincidentes, codigo_escolhido=None):
         - A rodovia ATRIBUIDA encabeca a lista, tornando o campo autossuficiente
           na leitura ("aqui a BR-116 e a BR-101 sao coincidentes") sem exigir o
           cruzamento com Trecho_SNV. As demais seguem em ordem numerica.
-        - Sem codigo atribuido (TRECHO_EMPATE), todas as BRs saem em ordem
-          numerica crescente: os codigos estao todos a mesma distancia minima,
-          de modo que nao ha criterio de proximidade que os separe, e a ordem
-          numerica assegura o determinismo exigido no restante do procedimento.
+        - Sem codigo atribuido (TRECHO_EMPATE nao desfeito), todas as BRs saem
+          em ordem numerica crescente, o que assegura o determinismo exigido no
+          restante do procedimento.
 
     Excecoes:
         Dois codigos DISTINTOS da MESMA BR podem se sobrepor - geometria
@@ -664,6 +703,70 @@ def rodovias_coincidentes_texto(coincidentes, codigo_escolhido=None):
     return ";".join(ordenadas), len(rodovias)
 
 
+def numero_do_codigo(codigo):
+    """Numero formado pelos 4 ultimos caracteres do vl_codigo, ou None.
+
+    Ex.: "040BDF0020" -> 20. Devolve None quando os 4 ultimos caracteres nao
+    sao todos digitos.
+    """
+    sufixo = codigo[-4:] if isinstance(codigo, str) and len(codigo) >= 4 else ""
+    return int(sufixo) if sufixo.isdigit() else None
+
+
+def fracao_no_trecho(registro, trechos, geometria_oae):
+    """Posicao relativa da OAE na LineString do codigo: 0 no inicio, 1 no fim.
+
+    Devolve None quando o codigo nao tem uma unica feicao mais proxima com
+    linha apta (ver preparar_trecho), ou quando a projecao falha.
+    """
+    if geometria_oae is None or len(registro["feicoes_mais_proximas"]) != 1:
+        return None
+    linha = trechos[registro["feicoes_mais_proximas"][0][0]]["linha"]
+    return None if linha is None else fracao_na_linha(linha, geometria_oae)
+
+
+def desempatar(empatados, por_codigo, trechos, geometria_oae):
+    """Escolhe um codigo entre codigos compativeis equidistantes da OAE.
+
+    Retorna:
+        (codigo, metodo), ou (None, None) quando nao ha como decidir.
+        metodo: "DESEMPATE_PELO_NUMERO_DO_CODIGO" ou
+                "DESEMPATE_PELO_TRECHO_SEGUINTE".
+
+    Regras, nesta ordem:
+        1. Numero do codigo (4 ultimos digitos): vence o maior, pois a
+           numeracao dos trechos cresce no sentido da rodovia
+           (040BDF0020 > 040BDF0017). Aplicada so quando todos os empatados
+           tem numero.
+        2. Trecho seguinte no sentido crescente: entre os que restarem, vence o
+           trecho em que a OAE esta mais perto do INICIO da linha. Numa emenda,
+           a OAE esta no fim do trecho anterior (fracao ~1) e no inicio do
+           seguinte (fracao ~0). Usa a geometria, e nao vl_km_inic, porque o km
+           recomeca na divisa de UF - justamente onde os numeros se repetem
+           (040BDF0020 e 040BGO0020).
+
+    Excecoes:
+        Sem linha apta para algum dos restantes, ou com fracoes iguais (dois
+        trechos que comecam no mesmo ponto), nao ha vencedor.
+    """
+    restantes = sorted(empatados)
+    numeros = {c: numero_do_codigo(c) for c in restantes}
+    if all(n is not None for n in numeros.values()):
+        maior = max(numeros.values())
+        restantes = [c for c in restantes if numeros[c] == maior]
+        if len(restantes) == 1:
+            return restantes[0], "DESEMPATE_PELO_NUMERO_DO_CODIGO"
+
+    fracoes = {c: fracao_no_trecho(por_codigo[c], trechos, geometria_oae) for c in restantes}
+    if any(f is None for f in fracoes.values()):
+        return None, None
+    menor = min(fracoes.values())
+    primeiros = [c for c in restantes if quase_igual(fracoes[c], menor, TOLERANCIA_EMPATE_FRACAO)]
+    if len(primeiros) != 1:
+        return None, None
+    return primeiros[0], "DESEMPATE_PELO_TRECHO_SEGUINTE"
+
+
 def selecionar_codigo(por_codigo, via, trechos, geometria_oae):
     """Seleciona um unico vl_codigo para a OAE e classifica a associacao.
 
@@ -671,12 +774,14 @@ def selecionar_codigo(por_codigo, via, trechos, geometria_oae):
         por_codigo: vl_codigo -> {"distancia", "feicoes_mais_proximas"}, com
             todos os codigos dentro do raio de busca.
         via: numero da BR da OAE (3 digitos) ou None.
-        trechos: fid -> registro do trecho SNV (usa a chave "geometria").
+        trechos: fid -> registro do trecho SNV (usa as chaves "geometria" e
+            "linha").
         geometria_oae: ponto da OAE em CRS_METRICA.
 
     Retorna:
         (codigo_ou_None, criterio, causa, rodovias_coincidentes)
-        causa: motivo da nao associacao (contabilizado no resumo), ou None.
+        causa: motivo da nao associacao ou, se houve desempate, o metodo usado
+            (contabilizados no resumo); None nos demais casos.
         rodovias_coincidentes: ver rodovias_coincidentes_texto, ou None.
 
     Sequencia de decisao:
@@ -685,9 +790,10 @@ def selecionar_codigo(por_codigo, via, trechos, geometria_oae):
                       incompativel, ou Via ausente -> TRECHO_DIVERGENTE
         3. dois ou mais codigos:
            nenhum compativel                       -> TRECHO_DIVERGENTE
-           vencedor nao unico                      -> TRECHO_EMPATE
            vencedor unico com coincidencia         -> TRECHO_COINCIDENTE
            vencedor unico sem coincidencia         -> TRECHO_FRONTEIRA
+           vencedor nao unico: desempatar; o escolhido segue as duas regras
+                               acima; sem escolhido -> TRECHO_EMPATE
 
     Hipoteses metodologicas:
         - A compatibilidade com a Via e pre-condicao: nenhum codigo de outra BR
@@ -698,7 +804,8 @@ def selecionar_codigo(por_codigo, via, trechos, geometria_oae):
           e nunca resgata um codigo mais distante.
         - O parceiro que comprova a coincidencia pode ser de outra BR; o codigo
           escolhido, nao.
-        - Empate nunca e desfeito pela ordem de leitura.
+        - Empate nunca e desfeito pela ordem de leitura, e sim pelo numero do
+          codigo ou pelo sentido da rodovia (desempatar).
     """
     if not por_codigo:
         return None, "SEM_TRECHO", "SEM_CANDIDATO_NO_RAIO", None
@@ -745,19 +852,24 @@ def selecionar_codigo(por_codigo, via, trechos, geometria_oae):
             coincidentes[codigo] = parceiros
 
     vencedores = list(coincidentes) if coincidentes else mais_proximos
-    if len(vencedores) != 1:
-        # A OAE empatada entre codigos coincidentes esta sobre rodovias
-        # coincidentes, mesmo sem trecho atribuido; por isso o campo e
-        # preenchido tambem aqui.
-        causa = ("CODIGOS_COINCIDENTES_COMPATIVEIS_EQUIDISTANTES" if coincidentes
-                 else "CODIGOS_COMPATIVEIS_EQUIDISTANTES")
-        return None, "TRECHO_EMPATE", causa, rodovias_coincidentes_texto(coincidentes)[0]
+    metodo = None
+    if len(vencedores) == 1:
+        codigo = vencedores[0]
+    else:
+        codigo, metodo = desempatar(vencedores, por_codigo, trechos, geometria_oae)
+        if codigo is None:
+            # A OAE empatada entre codigos coincidentes esta sobre rodovias
+            # coincidentes, mesmo sem trecho atribuido; por isso o campo e
+            # preenchido tambem aqui.
+            causa = ("CODIGOS_COINCIDENTES_COMPATIVEIS_EQUIDISTANTES" if coincidentes
+                     else "CODIGOS_COMPATIVEIS_EQUIDISTANTES")
+            return None, "TRECHO_EMPATE", causa, rodovias_coincidentes_texto(coincidentes)[0]
 
-    codigo = vencedores[0]
     if coincidentes:
-        return (codigo, "TRECHO_COINCIDENTE", None,
-                rodovias_coincidentes_texto(coincidentes, codigo)[0])
-    return codigo, "TRECHO_FRONTEIRA", None, None
+        # So a coincidencia do codigo escolhido descreve o local da OAE.
+        return (codigo, "TRECHO_COINCIDENTE", metodo,
+                rodovias_coincidentes_texto({codigo: coincidentes[codigo]}, codigo)[0])
+    return codigo, "TRECHO_FRONTEIRA", metodo, None
 
 
 # -----------------------------------------------------------------------------
@@ -905,6 +1017,21 @@ def interpolar_km(km_inicial, km_final, fracao):
     return km_inicial + fracao * (km_final - km_inicial)
 
 
+def fracao_na_linha(linha, geometria_oae):
+    """Posicao relativa da projecao da OAE ao longo da linha, de 0 a 1.
+
+    lineLocatePoint devolve a distancia, ao longo da linha, ate o ponto da
+    linha mais proximo da OAE (projecao ortogonal); dividida pelo comprimento,
+    e a fracao. Devolve None se a projecao falhar (valor negativo ou nao
+    finito) ou se a linha tiver comprimento nulo.
+    """
+    comprimento = linha.length()
+    posicao = linha.lineLocatePoint(geometria_oae)
+    if not (math.isfinite(posicao) and posicao >= 0 and comprimento > 0):
+        return None
+    return min(1.0, posicao / comprimento)
+
+
 def calcular_km(geometria_oae, linha, km_inicial, km_final):
     """Projeta a OAE sobre o trecho e interpola o km correspondente.
 
@@ -914,17 +1041,10 @@ def calcular_km(geometria_oae, linha, km_inicial, km_final):
         km_inicial, km_final: vl_km_inic e vl_km_fina do trecho.
 
     Retorna:
-        km (float), ou None se a projecao falhar.
-
-    lineLocatePoint devolve a distancia, ao longo da linha, ate o ponto da
-    linha mais proximo da OAE (projecao ortogonal); dividida pelo comprimento,
-    e a fracao usada na interpolacao. Devolve valor negativo em caso de falha.
+        km (float), ou None se a projecao falhar (ver fracao_na_linha).
     """
-    comprimento = linha.length()
-    posicao = linha.lineLocatePoint(geometria_oae)
-    if not (math.isfinite(posicao) and posicao >= 0 and comprimento > 0):
-        return None
-    return interpolar_km(km_inicial, km_final, posicao / comprimento)
+    fracao = fracao_na_linha(linha, geometria_oae)
+    return None if fracao is None else interpolar_km(km_inicial, km_final, fracao)
 
 
 # -----------------------------------------------------------------------------
@@ -1003,6 +1123,18 @@ nomes_oae_mantidos = {camada_oae.fields().at(i).name() for i in indices_oae_mant
 colisoes = sorted(set(CAMPOS_NOVOS) & nomes_oae_mantidos)
 if colisoes:
     raise Exception("A SGE ja possui campos reservados para a saida: " + ", ".join(colisoes))
+
+# Rodovias_coincidentes entra logo apos Via, e km_SNV logo apos UF. Sem UF na
+# SGE, km_SNV fica entre os demais campos novos.
+try:
+    CAMPO_UF = resolver_campo(
+        [(campo.name(), campo.alias()) for campo in camada_oae.fields()], CAMPO_UF)
+except ValueError as erro:
+    print(f"ATENCAO - {erro}")
+    CAMPO_UF = None
+ordem_saida = ordem_colunas(
+    [(i, camada_oae.fields().at(i).name()) for i in indices_oae_mantidos],
+    CAMPOS_NOVOS, {CAMPO_RODOVIAS_COINC: CAMPO_VIA, CAMPO_KM_SNV: CAMPO_UF})
 
 if not CRS_METRICA.isValid():
     raise Exception("CRS_METRICA invalida.")
@@ -1132,7 +1264,7 @@ definicao_campos_novos = [
     QgsField(CAMPO_VERSAO_SNV, QVariant.String, len=TAMANHO_VERSAO_SNV),
     QgsField(CAMPO_ADMINISTRACAO, QVariant.String, len=TAMANHO_ADMINISTRACAO),
     QgsField(CAMPO_JURISDICAO, QVariant.String, len=TAMANHO_JURISDICAO),
-    QgsField(CAMPO_KM_SNV, QVariant.Double, len=20, prec=3),
+    QgsField(CAMPO_KM_SNV, QVariant.Double, len=20, prec=CASAS_DECIMAIS_KM),
     QgsField(CAMPO_RODOVIAS_COINC, QVariant.String, len=TAMANHO_MAX_TEXTO),
     QgsField(CAMPO_STATUS, QVariant.String, len=20),
     QgsField(CAMPO_CRITERIO, QVariant.String, len=30),
@@ -1143,9 +1275,11 @@ definicao_campos_novos = [
 if [campo.name() for campo in definicao_campos_novos] != list(CAMPOS_NOVOS):
     raise RuntimeError("Definicao dos campos de saida diverge de CAMPOS_NOVOS.")
 
+definicao_por_nome = {campo.name(): campo for campo in definicao_campos_novos}
 provedor_saida = saida.dataProvider()
-provedor_saida.addAttributes(
-    [camada_oae.fields().at(i) for i in indices_oae_mantidos] + definicao_campos_novos)
+provedor_saida.addAttributes([
+    camada_oae.fields().at(chave) if origem == "oae" else definicao_por_nome[chave]
+    for origem, chave in ordem_saida])
 saida.updateFields()
 
 
@@ -1213,6 +1347,8 @@ def processar_oae(oae):
     if codigo is None:
         motivos_sem_associacao[f"{criterio}:{causa}"] += 1
         return valores
+    if causa is not None:
+        contagem[causa] += 1  # metodo de desempate
 
     registro = por_codigo[codigo]
     mais_proximas = registro["feicoes_mais_proximas"]
@@ -1246,7 +1382,7 @@ def processar_oae(oae):
         contagem["KM_NAO_DETERMINADO"] += 1
         motivos_km_nulo[motivo] += 1
     else:
-        valores[CAMPO_KM_SNV] = round(km, 3)
+        valores[CAMPO_KM_SNV] = round(km, CASAS_DECIMAIS_KM)
         contagem["KM_CALCULADO"] += 1
     return valores
 
@@ -1257,8 +1393,8 @@ for oae in camada_oae.getFeatures():
     atributos = oae.attributes()
     nova = QgsFeature(saida.fields())
     nova.setGeometry(QgsGeometry(oae.geometry()))
-    nova.setAttributes([atributos[i] for i in indices_oae_mantidos]
-                       + [valores[campo] for campo in CAMPOS_NOVOS])
+    nova.setAttributes([atributos[chave] if origem == "oae" else valores[chave]
+                        for origem, chave in ordem_saida])
     novas_feicoes.append(nova)
 
 if not provedor_saida.addFeatures(novas_feicoes)[0] or saida.featureCount() != len(novas_feicoes):
@@ -1291,6 +1427,8 @@ print(f"  {'Associadas:':24}{associadas}")
 print(f"  {'Sem trecho atribuido:':24}{sem_associacao}")
 for motivo, quantidade in sorted(motivos_sem_associacao.items()):
     print(f"      {motivo}: {quantidade}")
+print(f"  Empates desfeitos: {contagem['DESEMPATE_PELO_NUMERO_DO_CODIGO']} pelo numero do"
+      f" codigo, {contagem['DESEMPATE_PELO_TRECHO_SEGUINTE']} pelo trecho seguinte")
 print(f"  {STATUS_VALIDADO + ':':24}{contagem_status[STATUS_VALIDADO]}")
 print(f"  {STATUS_A_VALIDAR + ':':24}{contagem_status[STATUS_A_VALIDAR]}")
 print(f"  Raio ampliado (fator {FATOR_RAIO_AMPLIADO}): {contagem['RAIO_AMPLIADO']} OAEs,"
@@ -1315,6 +1453,8 @@ for situacao, quantidade in sorted(resumo_trechos.items()):
     print(f"  {situacao}: {quantidade}")
 print(f"  Sem geometria ou com falha de reprojecao: {snv_descartadas_geometria}")
 print()
+if CAMPO_UF is None:
+    print(f'ATENCAO - coluna "UF" nao encontrada na SGE: {CAMPO_KM_SNV} ficou entre os campos novos.')
 print("COLUNAS DA SGE NAO COPIADAS: " + (", ".join(campos_oae_excluidos) or "nenhuma"))
 if campos_oae_nao_encontrados:
     print("  ATENCAO - pedidas para exclusao, mas ausentes na SGE: "

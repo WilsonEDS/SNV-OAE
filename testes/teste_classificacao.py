@@ -1,13 +1,14 @@
 """Testa selecionar_codigo isolando o teste geometrico de sobreposicao."""
-import ast, math, re, itertools, pathlib
+import ast, collections, itertools, math, re, pathlib
 
 fonte = (pathlib.Path(__file__).resolve().parent.parent / 'associacao_oae_snv.py').read_text(encoding='utf-8')
 arvore = ast.parse(fonte)
 
 nomes_func = {"codigo_valido", "prefixo_codigo", "quase_igual",
               "selecionar_codigo", "rodovias_coincidentes_texto",
-              "valor_unanime"}
-nomes_const = {"TOLERANCIA_EMPATE_DISTANCIA_M"}
+              "valor_unanime", "numero_do_codigo", "fracao_na_linha",
+              "fracao_no_trecho", "desempatar"}
+nomes_const = {"TOLERANCIA_EMPATE_DISTANCIA_M", "TOLERANCIA_EMPATE_FRACAO"}
 
 ns = {"math": math, "re": re, "NULL": object()}
 partes = []
@@ -24,11 +25,27 @@ def falso_sobrepostos(ra, rb, feicoes, geom=None):
     return frozenset((ra["id"], rb["id"])) in PARES
 ns["codigos_sobrepostos"] = falso_sobrepostos
 
-sel = ns["selecionar_codigo"]
+class Linha:
+    """Simula a LineString: comprimento e posicao da projecao ao longo dela."""
+    def __init__(self, comprimento, posicao):
+        self.comprimento, self.posicao = comprimento, posicao
+    def length(self):
+        return self.comprimento
+    def lineLocatePoint(self, ponto):
+        return self.posicao
+
+# Trechos simulados: o fid de cada feicao e o proprio codigo. Por padrao, sem
+# linha apta; sem ponto da OAE, o desempate pelo trecho seguinte nao se aplica.
+TRECHOS = collections.defaultdict(lambda: {"linha": None})
+OAE = object()
+
+def sel(por_codigo, via, trechos=None, geometria_oae=None):
+    return ns["selecionar_codigo"](por_codigo, via,
+                                   TRECHOS if trechos is None else trechos, geometria_oae)
 
 def entrada(**codigos):
     """codigo -> distancia"""
-    return {c: {"id": c, "distancia": d, "feicoes_mais_proximas": [(1, d)]}
+    return {c: {"id": c, "distancia": d, "feicoes_mais_proximas": [(c, d)]}
             for c, d in codigos.items()}
 
 ok = 0
@@ -85,6 +102,52 @@ cod, crit, causa, rodcoinc = sel(entrada(**{"116A": 3.0, "116B": 3.0}), "116", N
 checa("empate", (cod, crit, causa),
       (None, "TRECHO_EMPATE", "CODIGOS_COMPATIVEIS_EQUIDISTANTES"))
 
+# --- 9b) EMPATE desfeito pelo numero do codigo -> FRONTEIRA -----------------
+cod, crit, causa, rodcoinc = sel(
+    entrada(**{"040BDF0017": 3.0, "040BDF0020": 3.0}), "040", None, None)
+checa("empate: maior numero vence", (cod, crit, causa, rodcoinc),
+      ("040BDF0020", "TRECHO_FRONTEIRA", "DESEMPATE_PELO_NUMERO_DO_CODIGO", None))
+# Compara o numero, nao o texto: 0100 > 0020 > 0009.
+cod, _, _, _ = sel(entrada(**{"040BDF0009": 3.0, "040BDF0100": 3.0, "040BDF0020": 3.0}), "040")
+checa("empate: numero, nao texto", cod, "040BDF0100")
+# So os empatados disputam: um codigo mais distante de numero maior nao entra.
+cod, crit, _, _ = sel(entrada(**{"040BDF0017": 3.0, "040BDF0020": 3.0, "040BDF0090": 5.0}), "040")
+checa("empate: so entre equidistantes", (cod, crit), ("040BDF0020", "TRECHO_FRONTEIRA"))
+# Codigo de outra BR nao participa do desempate.
+cod, _, _, _ = sel(entrada(**{"040BDF0017": 3.0, "040BDF0020": 3.0, "116BDF0900": 3.0}), "040")
+checa("empate: outra BR nao participa", cod, "040BDF0020")
+
+# --- 9c) numeros iguais (divisa de UF) -> trecho seguinte -------------------
+# A OAE esta no fim do 040BDF0020 (fracao 1) e no inicio do 040BGO0020 (fracao 0).
+TR = {"040BDF0020": {"linha": Linha(1000, 1000)}, "040BGO0020": {"linha": Linha(800, 0)}}
+cod, crit, causa, _ = sel(entrada(**{"040BDF0020": 3.0, "040BGO0020": 3.0}), "040", TR, OAE)
+checa("divisa: trecho seguinte", (cod, crit, causa),
+      ("040BGO0020", "TRECHO_FRONTEIRA", "DESEMPATE_PELO_TRECHO_SEGUINTE"))
+# Codigo sem numero tambem decide pelo trecho seguinte.
+TR = {"116A": {"linha": Linha(1000, 0)}, "116B": {"linha": Linha(1000, 1000)}}
+cod, _, causa, _ = sel(entrada(**{"116A": 3.0, "116B": 3.0}), "116", TR, OAE)
+checa("sem numero: trecho seguinte", (cod, causa), ("116A", "DESEMPATE_PELO_TRECHO_SEGUINTE"))
+# Bifurcacao: os dois comecam no ponto da OAE -> continua empate.
+TR = {"040BDF0020": {"linha": Linha(1000, 0)}, "040BGO0020": {"linha": Linha(800, 0)}}
+cod, crit, causa, _ = sel(entrada(**{"040BDF0020": 3.0, "040BGO0020": 3.0}), "040", TR, OAE)
+checa("bifurcacao: empate", (cod, crit, causa),
+      (None, "TRECHO_EMPATE", "CODIGOS_COMPATIVEIS_EQUIDISTANTES"))
+# Sem linha apta para um deles -> continua empate.
+TR = {"040BDF0020": {"linha": Linha(1000, 1000)}, "040BGO0020": {"linha": None}}
+cod, crit, _, _ = sel(entrada(**{"040BDF0020": 3.0, "040BGO0020": 3.0}), "040", TR, OAE)
+checa("sem linha: empate", (cod, crit), (None, "TRECHO_EMPATE"))
+# Duas feicoes do mesmo codigo empatadas: a linha nao e unica -> continua empate.
+pc = entrada(**{"040BDF0020": 3.0, "040BGO0020": 3.0})
+pc["040BGO0020"]["feicoes_mais_proximas"] = [("g1", 3.0), ("g2", 3.0)]
+TR = {"040BDF0020": {"linha": Linha(1000, 1000)}, "g1": {"linha": Linha(10, 0)},
+      "g2": {"linha": Linha(10, 0)}}
+checa("geometria do codigo nao unica: empate", sel(pc, "040", TR, OAE)[:2],
+      (None, "TRECHO_EMPATE"))
+# Numero desempata antes do sentido, mesmo que o sentido indicasse o outro.
+TR = {"040BDF0017": {"linha": Linha(1000, 0)}, "040BDF0020": {"linha": Linha(1000, 1000)}}
+checa("numero antes do sentido",
+      sel(entrada(**{"040BDF0017": 3.0, "040BDF0020": 3.0}), "040", TR, OAE)[0], "040BDF0020")
+
 # --- 10) coincidencia com parceiro de outra BR ------------------------------
 PARES = {frozenset(("116A", "101X"))}
 cod, crit, causa, rodcoinc = sel(
@@ -110,6 +173,14 @@ cod, crit, causa, rodcoinc = sel(
 checa("empate de coincidentes", (cod, crit, causa),
       (None, "TRECHO_EMPATE", "CODIGOS_COINCIDENTES_COMPATIVEIS_EQUIDISTANTES"))
 checa("empate de coincidentes: rodovias", rodcoinc, "101;116")
+# Com numeros, o empate de coincidentes e desfeito: o escolhido esta sobre
+# rodovias coincidentes, logo e TRECHO_COINCIDENTE, e o campo traz so a sua
+# coincidencia.
+PARES = {frozenset(("116BMG0010", "101BMG0500")), frozenset(("116BMG0020", "222BMG0700"))}
+cod, crit, causa, rodcoinc = sel(entrada(**{
+    "116BMG0010": 3.0, "116BMG0020": 3.0, "101BMG0500": 3.0, "222BMG0700": 3.0}), "116")
+checa("empate de coincidentes desfeito", (cod, crit, causa, rodcoinc),
+      ("116BMG0020", "TRECHO_COINCIDENTE", "DESEMPATE_PELO_NUMERO_DO_CODIGO", "116;222"))
 
 # --- 14) tres equidistantes, so um coincidente ------------------------------
 PARES = {frozenset(("116A", "101X"))}
@@ -127,6 +198,14 @@ for ordem in itertools.permutations(base):
     r = sel(d, "116", None, None)
     resultados.add(r)
 checa("ordem do dicionario irrelevante", len(resultados), 1)
+# Tambem nos desempates pelo numero e pelo trecho seguinte.
+TR = {"040BDF0020": {"linha": Linha(1000, 1000)}, "040BGO0020": {"linha": Linha(800, 0)},
+      "040BDF0017": {"linha": Linha(500, 500)}}
+for base in ({"040BDF0017": 3.0, "040BDF0020": 3.0, "040BGO0017": 3.0},
+             {"040BDF0020": 3.0, "040BGO0020": 3.0, "040BDF0017": 3.0}):
+    resultados = {sel({c: entrada(**base)[c] for c in ordem}, "040", TR, OAE)
+                  for ordem in itertools.permutations(base)}
+    checa(f"desempate independe da ordem: {sorted(base)}", len(resultados), 1)
 
 # --- 16) INVARIANTE: todo codigo devolvido e compativel com a Via ----------
 PARES = {frozenset(("116A", "101X"))}
@@ -136,6 +215,8 @@ combinacoes = [
     ({"101A": 1.0, "222B": 2.0}, "116"), ({"116A": 1.0, "116B": 2.0}, "116"),
     ({"116A": 1.0, "116B": 1.0}, "116"), ({"116A": 1.0, "116B": 2.0}, None),
     ({"101A": 1.0, "222B": 2.0, "116C": 3.0}, "116"),
+    ({"116BMG0010": 1.0, "116BMG0020": 1.0}, "116"),
+    ({"116BMG0010": 1.0, "116BMG0020": 1.0, "101BMG0010": 0.5}, "116"),
 ]
 for base_c, via in combinacoes:
     d = {c: {"id": c, "distancia": v, "feicoes_mais_proximas": [(1, v)]}
@@ -145,7 +226,7 @@ for base_c, via in combinacoes:
     if c_sel is not None:
         # Pre-condicao universal: nenhum codigo de outra BR e jamais atribuido.
         assert via is not None and c_sel[:3] == via, (c_sel, via, crit)
-        assert causa is None, (crit, causa)
+        assert causa is None or causa.startswith("DESEMPATE_"), (crit, causa)
     else:
         assert causa, (crit, causa)
     ok += 1

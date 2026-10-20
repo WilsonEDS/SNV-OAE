@@ -48,8 +48,17 @@ decidir o trecho. Em cada trecho SNV, o primeiro vértice da linha corresponde a
 
 ## Saída
 
-Uma camada em memória chamada **`SGExSNV`** com os campos originais da OAE
-seguidos de onze campos criados, nesta ordem:
+Uma camada em memória chamada **`SGExSNV`** com os campos originais da OAE,
+na ordem original, e onze campos criados. Dois deles entram entre os campos da
+OAE:
+
+- `Rodovias_coincidentes` logo depois de `Via`;
+- `km_SNV` logo depois de `UF` (se a SGE não tiver `UF`, `km_SNV` fica entre
+  os demais campos criados e o console avisa).
+
+Os outros nove vêm em seguida, nesta ordem: `Trecho_SNV`, `Versao_SNV`,
+`Administracao`, `Jurisdicao`, `Status`, `Criterio`, `Dist_SNV_m`, `Raio_SNV`,
+`Qtd_Codigos`.
 
 | Campo | Tipo | Conteúdo |
 |---|---|---|
@@ -57,7 +66,7 @@ seguidos de onze campos criados, nesta ordem:
 | `Versao_SNV` | texto | `versao_snv` do trecho atribuído — com qual versão da SNV o km foi calculado |
 | `Administracao` | texto | `ds_tipo_ad` do trecho atribuído, ou NULL |
 | `Jurisdicao` | texto | `ds_jurisdi` do trecho atribuído, ou NULL |
-| `km_SNV` | real | quilômetro interpolado, ou NULL |
+| `km_SNV` | real | quilômetro interpolado, com 2 casas decimais, ou NULL |
 | `Rodovias_coincidentes` | texto | BRs em **sobreposição comprovada** no local (ex.: `116;101`); NULL sem coincidência |
 | `Status` | texto | `Validado` ou `A validar` (ver abaixo) |
 | `Criterio` | texto | um dos seis critérios abaixo, em texto legível |
@@ -111,9 +120,29 @@ Mutuamente exclusivos e exaustivos, avaliados **nesta ordem**:
 | Sem trecho | geometria da OAE inválida, ou nenhum `vl_codigo` válido dentro do raio, nem com o fator ampliado |
 | Trecho único | exatamente um código no raio, **e** compatível com a `Via` |
 | Trecho divergente | nenhum código do raio é compatível com a `Via`, ou a `Via` está ausente |
-| Trecho empate | dois ou mais códigos compatíveis à **mesma distância** da OAE |
-| Trecho coincidente | vencedor único que compartilha porção linear local com outro código equidistante |
-| Trecho fronteira | vencedor único por menor distância, sem coincidência comprovada |
+| Trecho coincidente | vencedor que compartilha porção linear local com outro código equidistante (um trecho sobre o outro) |
+| Trecho fronteira | vencedor por menor distância, sem coincidência comprovada |
+| Trecho empate | dois ou mais códigos compatíveis à **mesma distância** que nem o desempate separa |
+
+### Desempate
+
+Quando dois ou mais códigos compatíveis estão à mesma distância da OAE — em
+geral numa emenda, onde um trecho termina e o seguinte começa —, o empate é
+desfeito assim:
+
+1. **Número do código**: vence o maior número formado pelos 4 últimos dígitos
+   do `vl_codigo` (`040BDF0020` vence `040BDF0017`).
+2. **Trecho seguinte**: se os números forem iguais (divisa de UF, como
+   `040BDF0020` e `040BGO0020`) ou não numéricos, vence o trecho seguinte no
+   sentido crescente da rodovia, isto é, aquele em cuja `LineString` a OAE está
+   mais perto do **início**. Usa-se a geometria, e não `vl_km_inic`, porque o
+   km recomeça na divisa de UF.
+
+O trecho escolhido fica como **Trecho fronteira**, ou como **Trecho
+coincidente** se ele próprio estiver sobreposto a outra rodovia. A OAE só
+continua como **Trecho empate**, sem trecho, quando nem assim há um vencedor:
+trechos que começam no mesmo ponto (bifurcação) ou sem geometria utilizável. O
+resumo do console mostra quantos empates foram desfeitos por cada regra.
 
 A compatibilidade com a `Via` declarada da OAE é **pré-condição universal**:
 nenhum código de BR diferente é atribuído, ainda que seja o único no raio.
@@ -183,12 +212,13 @@ As funções sem dependência do QGIS são extraídas do script e exercitadas fo
 do ambiente QGIS:
 
 ```bash
-python3 testes/teste_funcoes_puras.py     # 150 verificações
-python3 testes/teste_classificacao.py     # 59 verificações
+python3 testes/teste_funcoes_puras.py     # 162 verificações
+python3 testes/teste_classificacao.py     # 74 verificações
 ```
 
 Cobrem a normalização de dados, o raio em duas etapas, o cálculo do km
-(inclusive com limites invertidos), os seis critérios e
+(inclusive com limites invertidos), a ordem das colunas, os seis critérios,
+o desempate e
 as invariantes do procedimento — entre elas a compatibilidade obrigatória com a
 `Via` e a independência do resultado frente à ordem de leitura das feições.
 

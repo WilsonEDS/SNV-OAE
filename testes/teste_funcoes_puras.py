@@ -7,9 +7,9 @@ arvore = ast.parse(fonte)
 alvos = {"codigo_valido", "numero_finito_positivo", "numero_finito", "normalizar_via",
          "prefixo_codigo", "quase_igual", "valor_unanime", "truncar_texto",
          "status_validacao", "raio_base", "buscar_em_etapas", "preparar_trecho",
-         "interpolar_km", "calcular_km", "indices_mantidos", "normalizar_nome_campo",
+         "interpolar_km", "fracao_na_linha", "calcular_km", "ordem_colunas", "indices_mantidos", "normalizar_nome_campo",
          "resolver_campo", "mensagem_campo_ausente"}
-consts = {"FATOR_RAIO", "FATOR_RAIO_AMPLIADO", "TEXTO_CRITERIO", "CRITERIOS_VALIDOS",
+consts = {"CASAS_DECIMAIS_KM", "FATOR_RAIO", "FATOR_RAIO_AMPLIADO", "TEXTO_CRITERIO", "CRITERIOS_VALIDOS",
           "STATUS_VALIDADO", "STATUS_A_VALIDAR", "CAMPOS_OAE_EXCLUIDOS", "CAMPOS_NOVOS",
           "CAMPO_TRECHO_SNV", "CAMPO_VERSAO_SNV", "CAMPO_ADMINISTRACAO", "CAMPO_JURISDICAO",
           "CAMPO_KM_SNV", "CAMPO_RODOVIAS_COINC", "CAMPO_STATUS", "CAMPO_CRITERIO",
@@ -158,6 +158,44 @@ checa("km com limites invertidos segue a linha", K(None, Linha(1000, 250), 600.0
 checa("falha da projecao", K(None, Linha(1000, -1), 10.0, 11.0), None)
 checa("projecao nao finita", K(None, Linha(1000, float("nan")), 10.0, 11.0), None)
 checa("linha de comprimento nulo", K(None, Linha(0, 0), 10.0, 11.0), None)
+FR = g["fracao_na_linha"]
+checa("fracao no inicio", FR(Linha(1000, 0), None), 0.0)
+checa("fracao no fim", FR(Linha(1000, 1000), None), 1.0)
+checa("fracao limitada a 1", FR(Linha(1000, 1000.0000001), None), 1.0)
+checa("fracao com falha", FR(Linha(1000, -1), None), None)
+# km gravado com 2 casas decimais.
+checa("casas decimais do km", g["CASAS_DECIMAIS_KM"], 2)
+checa("km arredondado", round(K(None, Linha(3000, 1000), 10.0, 11.0), g["CASAS_DECIMAIS_KM"]), 10.33)
+
+# --- ordem das colunas na saida ---
+O = g["ordem_colunas"]
+NOVOS = g["CAMPOS_NOVOS"]
+ANC = {"Rodovias_coincidentes": "Via", "km_SNV": "UF"}
+def nomes_saida(colunas, ancoras=ANC):
+    sge = dict(colunas)
+    return [sge[c] if o == "oae" else c for o, c in O(colunas, NOVOS, ancoras)]
+colunas = list(enumerate(["ID", "Nome", "Via", "UF", "Extensão (m)", "Relacao_SNV"]))
+checa("Rodovias_coincidentes apos Via e km_SNV apos UF", nomes_saida(colunas), [
+    "ID", "Nome", "Via", "Rodovias_coincidentes", "UF", "km_SNV", "Extensão (m)",
+    "Relacao_SNV", "Trecho_SNV", "Versao_SNV", "Administracao", "Jurisdicao",
+    "Status", "Criterio", "Dist_SNV_m", "Raio_SNV", "Qtd_Codigos"])
+# UF antes de Via, e indices nao consecutivos (colunas excluidas no meio).
+colunas = [(0, "UF"), (2, "Via"), (5, "Nome")]
+checa("ordem da SGE preservada", nomes_saida(colunas)[:5],
+      ["UF", "km_SNV", "Via", "Rodovias_coincidentes", "Nome"])
+checa("indices originais preservados", O(colunas, NOVOS, ANC)[:3],
+      [("oae", 0), ("novo", "km_SNV"), ("oae", 2)])
+# Sem UF: km_SNV volta para a posicao padrao entre os campos novos.
+colunas = list(enumerate(["ID", "Via"]))
+checa("sem UF", nomes_saida(colunas, {"Rodovias_coincidentes": "Via", "km_SNV": None}),
+      ["ID", "Via", "Rodovias_coincidentes", "Trecho_SNV", "Versao_SNV", "Administracao",
+       "Jurisdicao", "km_SNV", "Status", "Criterio", "Dist_SNV_m", "Raio_SNV", "Qtd_Codigos"])
+# Via e UF como ultimas colunas.
+colunas = list(enumerate(["ID", "UF", "Via"]))
+checa("ancoras no fim da SGE", nomes_saida(colunas)[:5],
+      ["ID", "UF", "km_SNV", "Via", "Rodovias_coincidentes"])
+checa("todos os campos novos uma vez", sorted(c for o, c in O(colunas, NOVOS, ANC) if o == "novo"),
+      sorted(NOVOS))
 
 # --- Status: formula da planilha ---
 S = g["status_validacao"]
